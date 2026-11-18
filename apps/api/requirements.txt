@@ -1,0 +1,16 @@
+# Mastery Lab API - runtime dependencies only (no dev-only extras).
+# NOTE: keep this file ASCII-only. pip reads requirements.txt with the system
+# locale encoding on Chinese Windows (GBK), so UTF-8 Chinese comments break install.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.0
+SQLAlchemy==2.0.36
+httpx==0.28.1
+# Multipart form parsing for material upload (P1.1).
+python-multipart==0.0.20
+# Text extraction for PDF materials (P1.1). Pure Python, no native deps.
+pypdf==5.1.0
+# Fernet fallback for API key encryption on non-Windows platforms.
+# On Windows the system DPAPI is used first, so this is a safety net.
+cryptography==44.0.0

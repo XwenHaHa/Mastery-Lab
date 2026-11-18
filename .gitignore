@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# 本地数据默认全部私有（含教材、聊天、凭据和服务记录）
+/data/*
+!/data/.gitkeep
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+
+# 环境变量与密钥
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+.npmrc
+
+# 编辑器与系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 日志
+*.log
+logs/
+
+# 只保留测试程序、随仓样例和经过审查的教学验收摘要。
+/docs/qa/mastery-*/
+/docs/qa/*.json
+!/docs/qa/p14-ui-result.json
+!/docs/qa/p14-migration-result.json
+!/docs/qa/p14-preflight-result.json
+/docs/qa/*.png
+/docs/qa/*screenshots*/
+/docs/review/
+/transfer/
+*.bundle

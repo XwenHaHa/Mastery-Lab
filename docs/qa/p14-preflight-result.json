@@ -1,0 +1,12 @@
+{
+  "checkedAt": "2026-11-17T08:18:04.390812+00:00",
+  "kind": "p14-preflight-real-model-probe",
+  "modelCount": 1,
+  "modelName": "deepseek-v4.1-flash-free",
+  "probe": {
+    "ok": false,
+    "httpStatus": 429,
+    "latencyMs": 7716,
+    "reply": ""
+  }
+}

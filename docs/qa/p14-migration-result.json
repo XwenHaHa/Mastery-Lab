@@ -1,0 +1,18 @@
+{
+  "timestamp": "2026-11-17T09:14:18.150929+00:00",
+  "checks": [
+    "升级第 1 次：原表原列逐行摘要一致、旧完成来源标记、schema 5、完整性及外键正常",
+    "升级第 2 次：原表原列逐行摘要一致、旧完成来源标记、schema 5、完整性及外键正常"
+  ],
+  "sourceSchema": "4",
+  "preserved": {
+    "model_configs": 1,
+    "courses": 4,
+    "chapters": 10,
+    "knowledge_points": 19,
+    "learning_sessions": 5,
+    "chat_messages": 34
+  },
+  "legacyCompletedCount": 0,
+  "passed": true
+}

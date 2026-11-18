@@ -1,0 +1,94 @@
+/* Mastery Lab 设计令牌
+   深色为默认主题，浅色通过 html[data-theme='light'] 覆盖。
+   刻意不使用渐变与大面积阴影：这是一个长时间阅读和写代码的工具界面。 */
+
+:root,
+html.dark {
+  color-scheme: dark;
+
+  --ml-bg: #0d1117;
+  --ml-bg-soft: #10151c;
+  --ml-surface: #151b23;
+  --ml-surface-2: #1a212a;
+  --ml-surface-3: #202833;
+  --ml-border: #232b36;
+  --ml-border-strong: #2f3a47;
+
+  --ml-text: #e6edf3;
+  --ml-text-2: #a7b4c2;
+  --ml-text-3: #74808e;
+
+  --ml-accent: #4c8dff;
+  --ml-accent-hover: #6ba2ff;
+  --ml-accent-weak: rgba(76, 141, 255, 0.12);
+  --ml-success: #3fb950;
+  --ml-warning: #d29922;
+  --ml-danger: #f85149;
+
+  /* 代码高亮：低饱和，避免正文里出现彩虹色 */
+  --ml-code-comment: #7d8794;
+  --ml-code-string: #9ecb7a;
+  --ml-code-keyword: #c792ea;
+  --ml-code-number: #e5a663;
+  --ml-code-key: #7fb3ff;
+
+  --ml-radius-sm: 6px;
+  --ml-radius: 8px;
+  --ml-radius-lg: 12px;
+
+  --ml-font-sans: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', 'Hiragino Sans GB',
+    system-ui, sans-serif;
+  --ml-font-mono: 'Cascadia Code', 'JetBrains Mono', Consolas, 'Courier New', monospace;
+
+  /* Element Plus 变量映射：让组件跟随我们的中性色，而不是默认蓝紫主题 */
+  --el-color-primary: var(--ml-accent);
+  --el-bg-color: var(--ml-surface);
+  --el-bg-color-page: var(--ml-bg);
+  --el-bg-color-overlay: var(--ml-surface-2);
+  --el-text-color-primary: var(--ml-text);
+  --el-text-color-regular: var(--ml-text-2);
+  --el-text-color-secondary: var(--ml-text-3);
+  --el-text-color-placeholder: var(--ml-text-3);
+  --el-border-color: var(--ml-border);
+  --el-border-color-light: var(--ml-border);
+  --el-border-color-lighter: var(--ml-border);
+  --el-border-color-darker: var(--ml-border-strong);
+  --el-fill-color-blank: var(--ml-surface);
+  --el-fill-color-light: var(--ml-surface-2);
+  --el-fill-color-lighter: var(--ml-surface-2);
+  --el-mask-color: rgba(6, 9, 13, 0.62);
+  --el-font-family: var(--ml-font-sans);
+  --el-border-radius-base: var(--ml-radius-sm);
+}
+
+html[data-theme='light'] {
+  color-scheme: light;
+
+  --ml-bg: #f5f7fa;
+  --ml-bg-soft: #ffffff;
+  --ml-surface: #ffffff;
+  --ml-surface-2: #f3f5f8;
+  --ml-surface-3: #e9edf2;
+  --ml-border: #dce2ea;
+  --ml-border-strong: #c6cfd9;
+
+  --ml-text: #18202b;
+  --ml-text-2: #4a5766;
+  --ml-text-3: #6d7a88;
+
+  --ml-accent: #2f6fe4;
+  --ml-accent-hover: #1f5fd4;
+  --ml-accent-weak: rgba(47, 111, 228, 0.1);
+  --ml-success: #1a7f37;
+  --ml-warning: #9a6700;
+  --ml-danger: #cf222e;
+
+  --ml-code-comment: #6e7781;
+  --ml-code-string: #0a7d3e;
+  --ml-code-keyword: #8250df;
+  --ml-code-number: #b35900;
+  --ml-code-key: #0550ae;
+
+  --el-mask-color: rgba(240, 243, 247, 0.7);
+  --el-bg-color-overlay: #ffffff;
+}
