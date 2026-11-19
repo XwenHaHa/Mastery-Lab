@@ -1040,6 +1040,7 @@ function chapterPoints(chapter: Chapter): KnowledgePoint[] {
               :disabled="!session || loadingSession || busy || teaching?.paused"
               @update:model-value="draft = $event"
               @submit="submitActivity"
+              @regenerate="regenerate"
             />
             <el-input
               v-else

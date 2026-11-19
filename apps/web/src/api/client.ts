@@ -24,11 +24,13 @@ export class ApiError extends Error {
 
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response
+  const isFormData = typeof FormData !== 'undefined' && init.body instanceof FormData
   try {
     response = await fetch(`${API_BASE}${path}`, {
       ...init,
       headers: {
-        'Content-Type': 'application/json',
+        // FormData 必须让浏览器自己生成 multipart boundary。
+        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
         ...(init.headers ?? {}),
       },
     })

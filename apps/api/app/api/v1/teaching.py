@@ -14,7 +14,7 @@ from ...core.response import ApiResponse, AppError, ConflictError, ValidationErr
 from ...db import SessionLocal
 from ...db.models import ChatMessage, TeachingEvaluation, TeachingEvent, TeachingOperation, TeachingProgress
 from ...schemas.teaching import TeachingAction
-from ...services import classroom_service, stream_registry, teaching_protocol
+from ...services import activities, activity_protocol, classroom_service, stream_registry, teaching_pipeline, teaching_protocol
 from ...services.llm_client import LLMStreamError, stream_chat
 from ...services.teaching_state import TeachingStateMachine, iso
 from .classroom import SSE_HEADERS, _sse
@@ -89,6 +89,22 @@ async def action(session_id: SessionId, payload: TeachingAction, request: Reques
             operation = machine.begin(session_id, payload, model.model_name)
             operation_id = operation.id
             progress = db.get(TeachingProgress, session_id)
+            # P1.7-B：标准答案类活动由服务端确定性判定，不再调用模型，避免模型误判与额外成本。
+            if operation.kind == "evaluation":
+                definition = activities.definition_for_question(
+                    db, session_id, operation.question_message_id
+                )
+                if definition is not None and definition.evaluation.mode in (
+                    "EXACT",
+                    "NORMALIZED",
+                    "NUMERIC",
+                    "NONE",
+                ):
+                    return StreamingResponse(
+                        deterministic_stream(session_id, operation.id, payload.content, event),
+                        media_type="text/event-stream",
+                        headers=SSE_HEADERS,
+                    )
             messages = teaching_protocol.build_messages(db, row, progress, operation, payload.content)
             prepared = {"operation_id": operation.id, "assistant_id": operation.assistant_message_id, "kind": operation.kind,
                 "model_name": model.model_name, "base_url": model.base_url, "api_key": key, "messages": messages, "teaching": machine.view(progress)}
@@ -101,6 +117,63 @@ async def action(session_id: SessionId, payload: TeachingAction, request: Reques
             await asyncio.shield(stream_registry.unregister(session_id, event))
         raise
     return StreamingResponse(event_stream(session_id, prepared, event, request), media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+async def deterministic_stream(session_id, operation_id, content, event):
+    """P1.7-B：标准答案类活动的服务端确定性评价（不调用模型）。"""
+    try:
+        with SessionLocal() as db:
+            machine = TeachingStateMachine(db)
+            operation = db.get(TeachingOperation, operation_id)
+            if operation is None or operation.status != "active":
+                raise ValidationError("本次提交已失效，请刷新后重试")
+            progress = db.get(TeachingProgress, session_id)
+            definition = activities.definition_for_question(
+                db, session_id, operation.question_message_id
+            )
+            if definition is None:
+                raise ValidationError("当前活动定义不可用，请让老师重新生成任务")
+            result = activity_protocol.evaluate_deterministic(definition, content)
+            if result is None:
+                raise ValidationError("当前活动需要模型评价，请重新提交")
+            pipeline = teaching_pipeline.TeachingPipeline(
+                getattr(progress, "pipeline_version", 1)
+            )
+            judgment = activity_protocol.to_judgment(
+                result,
+                is_verify=pipeline.is_verify(operation.stage),
+                student_input=content,
+            )
+            teaching = machine.finish(operation.id, judgment.feedback, judgment)
+            message = db.get(ChatMessage, operation.assistant_message_id)
+            output = (
+                classroom_service.message_out(message, streaming=False).model_dump(
+                    mode="json", by_alias=True
+                )
+                if message
+                else {"id": operation.assistant_message_id, "content": judgment.feedback}
+            )
+        yield _sse("delta", {"text": output.get("content", judgment.feedback)})
+        yield _sse(
+            "done",
+            {
+                "sessionId": session_id,
+                "messageId": output.get("id"),
+                "status": "completed",
+                "message": output,
+                "teaching": teaching,
+            },
+        )
+    except Exception as error:  # noqa: BLE001 - 统一转成 SSE error，保持原状态
+        safe = error.message if isinstance(error, AppError) else "服务端评价失败，本阶段未推进，请重试"
+        try:
+            with SessionLocal() as db:
+                TeachingStateMachine(db).fail(operation_id, safe)
+        except Exception:
+            logger.error("服务端评价失败状态未保存：operation=%s", operation_id)
+        yield _sse("error", {"sessionId": session_id, "messageId": None, "message": safe})
+    finally:
+        await asyncio.shield(stream_registry.unregister(session_id, event))
 
 
 async def event_stream(session_id, prepared, event, request):

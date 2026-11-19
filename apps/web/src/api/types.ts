@@ -358,6 +358,7 @@ export interface ActivityDefinition {
   title: string
   objective: string
   content: ActivityContentBlock[]
+  materials?: { materialId: number; role?: string; caption?: string }[]
   interaction: {
     inputKind: string
     prompt: string
@@ -376,6 +377,17 @@ export interface ActivityDefinition {
   meta?: Record<string, unknown>
 }
 
+export interface ActivityMaterialRef {
+  materialId: number
+  exists: boolean
+  courseId: number
+  fileName: string
+  kind: string
+  mimeType: string
+  caption: string
+  url: string
+}
+
 export interface CurrentActivity {
   id: number
   activityType: string
@@ -384,9 +396,23 @@ export interface CurrentActivity {
   attemptNo: number
   hintCount: number
   definition: ActivityDefinition
+  materials?: ActivityMaterialRef[]
   studentInput: string
   result: Record<string, unknown> | null
   aiFeedback: string
+}
+
+/** 课程素材（P1.6-G / P1.7-D） */
+export interface MaterialAsset {
+  id: number
+  courseId: number
+  fileName: string
+  kind: 'image' | 'audio' | 'video'
+  mimeType: string
+  sizeBytes: number
+  caption: string
+  url: string
+  createdAt: string
 }
 
 export interface TeachingState {

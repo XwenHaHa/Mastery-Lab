@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from ..db.models import ChatMessage, TeachingActivityInstance, TeachingOperation, TeachingProgress
 from ..schemas.teaching import TeachingJudgment, TeachingTask
-from . import activity_protocol, classroom_service
+from . import activity_protocol, classroom_service, material_library
 
 logger = logging.getLogger(__name__)
 
@@ -47,15 +47,20 @@ def record_task(
     """把一次题目生成写成活动实例；失败不影响教学主流程。"""
     try:
         course, point = _entities(db, progress)
-        definition = activity_protocol.definition_from_task(
-            instruction=task.instruction,
-            question=task.question,
-            rubric=task.rubric,
-            hint=task.hint,
-            summary=task.summary,
+        definition, warnings = activity_protocol.build_definition_from_task(
+            task=task,
             stage=operation.stage,
             knowledge_point_id=point.id,
+            point_title=point.title,
+            allowed_material_ids=material_library.material_ids_for_course(db, course.id),
         )
+        if warnings:
+            logger.warning(
+                "教学活动已降级或清洗 session=%s operation=%s: %s",
+                progress.session_id,
+                operation.id,
+                "；".join(warnings),
+            )
         instance = TeachingActivityInstance(
             session_id=progress.session_id,
             course_id=course.id,
@@ -155,6 +160,14 @@ def current_activity_payload(db: Session, progress: TeachingProgress) -> dict | 
         instance = _instance_for_question(db, progress.session_id, question_message_id)
         if instance is None:
             return None
+        definition = json.loads(instance.definition_json or "{}")
+        material_ids: list[int] = []
+        for block in definition.get("content") or []:
+            if block.get("kind") in ("image", "audio", "video") and block.get("materialId"):
+                material_ids.append(int(block["materialId"]))
+        for item in definition.get("materials") or []:
+            if item.get("materialId"):
+                material_ids.append(int(item["materialId"]))
         return {
             "id": instance.id,
             "activityType": instance.activity_type,
@@ -162,7 +175,8 @@ def current_activity_payload(db: Session, progress: TeachingProgress) -> dict | 
             "status": instance.status,
             "attemptNo": instance.attempt_no,
             "hintCount": instance.hint_count,
-            "definition": json.loads(instance.definition_json or "{}"),
+            "definition": definition,
+            "materials": material_library.resolve_material_refs(db, material_ids, instance.course_id),
             "studentInput": instance.student_input,
             "result": json.loads(instance.result_json or "{}") if instance.result_json else None,
             "aiFeedback": instance.ai_feedback,
@@ -170,6 +184,30 @@ def current_activity_payload(db: Session, progress: TeachingProgress) -> dict | 
     except Exception:  # noqa: BLE001 - 渲染增强失败时回退旧输入框
         logger.exception("读取当前教学活动失败 session=%s", progress.session_id)
         return None
+
+
+def definition_for_question(
+    db: Session, session_id: int, question_message_id: int | None
+) -> activity_protocol.TeachingActivityDefinition | None:
+    """读取某条待答问题对应的活动定义，供服务端确定性评价使用。"""
+    instance = _instance_for_question(db, session_id, question_message_id)
+    if instance is None:
+        return None
+    try:
+        return activity_protocol.TeachingActivityDefinition.model_validate(
+            json.loads(instance.definition_json or "{}")
+        )
+    except Exception:  # noqa: BLE001 - 旧数据或损坏定义不影响文字评价回退
+        logger.exception("解析活动定义失败 session=%s instance=%s", session_id, instance.id)
+        return None
+
+
+def current_definition(
+    db: Session, progress: TeachingProgress
+) -> activity_protocol.TeachingActivityDefinition | None:
+    return definition_for_question(
+        db, progress.session_id, getattr(progress, "question_message_id", None)
+    )
 
 
 def audit_payload(instance: TeachingActivityInstance) -> dict:

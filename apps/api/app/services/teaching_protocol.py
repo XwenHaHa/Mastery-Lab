@@ -22,8 +22,8 @@ def parse_result(text, operation, db):
     try:
         if operation.kind == "task":
             result = TeachingTask.model_validate_json(raw)
-            combined = result.instruction + result.question
-            if combined.count('?') + combined.count('？') > 1 or re.search(r'(?:^|\n)\s*(?:2[.、)]|二[、.])', result.question):
+            # P1.7-B：只约束 question 本身；instruction 中的反问/设问不算多题。
+            if result.question.count('?') + result.question.count('？') > 1 or re.search(r'(?:^|\n)\s*(?:2[.、)]|二[、.])', result.question):
                 raise ValueError("multiple questions")
             if operation.stage == "VERIFY":
                 previous = db.scalars(select(TeachingOperation).where(TeachingOperation.session_id == operation.session_id, TeachingOperation.kind == 'task', TeachingOperation.status == 'completed')).all()

@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -26,6 +26,8 @@ class TeachingTask(BaseModel):
     rubric: str = Field(min_length=3, max_length=3000)
     hint: str = Field(min_length=1, max_length=1000)
     summary: str = Field(default="", max_length=2000)
+    # P1.7-B：可选结构化活动；旧模型只返回五字段时继续走 legacy 适配。
+    activity: dict[str, Any] | None = None
 
 
 class TeachingJudgment(BaseModel):

@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import hashlib
 import json
+import re
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -319,8 +320,23 @@ class TeachingStateMachine:
         if result.evaluation not in allowed:
             raise ValidationError("模型评价与当前阶段不匹配，请重新提交")
         if result.evaluation in ("CORRECT", "PASSED"):
-            generic = user.content.strip().rstrip("。.!！").lower() in ("我懂了", "懂了", "知道了", "明白了", "ok", "yes", "好的", "会了")
-            if generic or not result.evidence_quote.strip() or result.evidence_quote not in user.content:
+            user_text = user.content
+            # 模型经常把证据写成概括而不是逐字引用；这里用学生原话重新对齐，
+            # 既避免伪造引用，也避免真实正确的回答被误判为 UNCLEAR。
+            quote = result.evidence_quote.strip()
+            if quote and quote not in user_text:
+                compact_quote = re.sub(r"\s+", "", quote)
+                compact_answer = re.sub(r"\s+", "", user_text)
+                evidence = user_text.strip()[:120] if compact_quote and compact_quote in compact_answer else ""
+                if evidence:
+                    result = result.model_copy(
+                        update={
+                            "evidence_quote": evidence,
+                            "reason": f"{result.reason}（服务端已将证据对齐到学生原话）",
+                        }
+                    )
+            generic = user_text.strip().rstrip("。.!！").lower() in ("我懂了", "懂了", "知道了", "明白了", "ok", "yes", "好的", "会了")
+            if generic or not result.evidence_quote.strip() or result.evidence_quote not in user_text:
                 result = result.model_copy(update={"evaluation": "UNCLEAR", "feedback": "仅确认理解不足以通过。请针对当前问题给出具体解释或代码片段。", "reason": "缺少可引用的实际回答证据", "suggested_action": "ASK_CLARIFICATION"})
                 self.db.get(ChatMessage, operation.assistant_message_id).content = result.feedback
         row = classroom_service.get_session_row(self.db, progress.session_id)

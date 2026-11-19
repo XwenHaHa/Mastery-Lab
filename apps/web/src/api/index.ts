@@ -28,6 +28,7 @@ import type {
   LearningHistoryPage,
   LearningReport,
   MasteryOverview,
+  MaterialAsset,
   MistakeDetail,
   MistakePage,
   MistakeRecord,
@@ -152,6 +153,19 @@ export const courseApi = {
 
   reorder: (courseId: number, payload: { chapters: number[]; knowledgePoints: ChapterPointOrder[] }) =>
     request<CourseDetail>(`/courses/${courseId}/reorder`, { method: 'PATCH', body: JSON.stringify(payload) }),
+}
+
+/** 课程素材（P1.6-G / P1.7-D）：图片、音频、视频 */
+export const materialApi = {
+  list: (courseId: number) => request<MaterialAsset[]>(`/courses/${courseId}/materials`),
+  upload: (courseId: number, file: File, caption = '') => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('caption', caption)
+    return request<MaterialAsset>(`/courses/${courseId}/materials`, { method: 'POST', body: form })
+  },
+  get: (materialId: number) => request<MaterialAsset>(`/materials/${materialId}`),
+  remove: (materialId: number) => request<null>(`/materials/${materialId}`, { method: 'DELETE' }),
 }
 
 export interface UploadProgress {

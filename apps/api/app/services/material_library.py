@@ -250,3 +250,54 @@ def payload(material: Material) -> dict:
         "url": f"{settings.api_prefix}/materials/{material.id}/content",
         "createdAt": material.created_at.isoformat() if material.created_at else None,
     }
+
+
+def material_ids_for_course(db: Session, course_id: int) -> set[int]:
+    """当前课程拥有的素材 ID，用于活动定义归属校验（P1.7-A）。"""
+    return set(
+        db.scalars(select(Material.id).where(Material.course_id == course_id)).all()
+    )
+
+
+def resolve_material_refs(db: Session, material_ids: list[int], course_id: int) -> list[dict]:
+    """把活动引用的素材解析成前端可读的元数据；缺失或跨课程时 exists=false。
+
+    只读，不修改历史活动。删除素材后旧活动仍然保留定义，前端显示缺失占位。
+    """
+    unique = sorted({int(item) for item in material_ids if int(item) > 0})
+    if not unique:
+        return []
+    rows = db.scalars(
+        select(Material).where(Material.id.in_(unique), Material.course_id == course_id)
+    ).all()
+    by_id = {row.id: row for row in rows}
+    result: list[dict] = []
+    for material_id in unique:
+        material = by_id.get(material_id)
+        if material is None:
+            result.append(
+                {
+                    "materialId": material_id,
+                    "exists": False,
+                    "courseId": course_id,
+                    "fileName": "",
+                    "kind": "unknown",
+                    "mimeType": "",
+                    "caption": "",
+                    "url": "",
+                }
+            )
+            continue
+        result.append(
+            {
+                "materialId": material.id,
+                "exists": True,
+                "courseId": material.course_id,
+                "fileName": material.file_name,
+                "kind": material.kind,
+                "mimeType": material.mime_type,
+                "caption": material.caption,
+                "url": f"{settings.api_prefix}/materials/{material.id}/content",
+            }
+        )
+    return result

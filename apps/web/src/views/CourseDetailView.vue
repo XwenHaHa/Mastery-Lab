@@ -7,13 +7,17 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  CopyDocument,
   Delete,
   Document,
   Edit,
+  Microphone,
   Plus,
+  Upload,
+  VideoCamera,
 } from '@element-plus/icons-vue'
 
-import { courseLibraryApi } from '@/api'
+import { courseLibraryApi, materialApi } from '@/api'
 import { ApiError } from '@/api/client'
 import type {
   Chapter,
@@ -22,6 +26,7 @@ import type {
   KnowledgePoint,
   KnowledgePointDetail,
   LearningStatus,
+  MaterialAsset,
 } from '@/api/types'
 import {
   formatBytes,
@@ -49,6 +54,15 @@ const collapsed = ref<Set<number>>(new Set())
 const selectedPointId = ref<number | null>(null)
 const pointDetail = ref<KnowledgePointDetail | null>(null)
 const pointLoading = ref(false)
+
+/* ---------- 课程素材（P1.7-D） ---------- */
+const materials = ref<MaterialAsset[]>([])
+const materialLoading = ref(false)
+const materialUploading = ref(false)
+const materialCaption = ref('')
+const materialPreview = ref<MaterialAsset | null>(null)
+const materialPreviewOpen = ref(false)
+const materialInput = ref<HTMLInputElement | null>(null)
 
 const ICON_CHOICES = ['', '🐍', '🐳', '🦀', '📘', '⚙️', '🧩', '🌐', '🧪', '📦']
 
@@ -102,6 +116,7 @@ async function load(): Promise<void> {
     course.value = await courseLibraryApi.detail(id)
     // 进度接口只用来看"最近学习"，失败不影响主流程
     progress.value = await courseLibraryApi.progress(id).catch(() => null)
+    void loadMaterials(id)
     await pickInitialPoint()
   } catch (err) {
     errorMessage.value = err instanceof ApiError ? err.message : '加载课程失败'
@@ -180,6 +195,96 @@ async function refreshAfter(mutate: () => Promise<CourseDetail>, options: { keep
     requestError(err, '操作失败')
   } finally {
     busy.value = false
+  }
+}
+
+/* ---------------- 课程素材 ---------------- */
+
+async function loadMaterials(id = courseId.value): Promise<void> {
+  if (!Number.isFinite(id)) return
+  materialLoading.value = true
+  try {
+    materials.value = await materialApi.list(id)
+  } catch (err) {
+    materials.value = []
+    requestError(err, '素材列表加载失败')
+  } finally {
+    materialLoading.value = false
+  }
+}
+
+function pickMaterial(): void {
+  materialInput.value?.click()
+}
+
+async function onMaterialFile(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  materialUploading.value = true
+  try {
+    const asset = await materialApi.upload(courseId.value, file, materialCaption.value.trim())
+    materials.value = [asset, ...materials.value]
+    materialCaption.value = ''
+    ElMessage.success('素材已上传')
+  } catch (err) {
+    requestError(err, '素材上传失败')
+  } finally {
+    materialUploading.value = false
+  }
+}
+
+function openMaterial(item: MaterialAsset): void {
+  materialPreview.value = item
+  materialPreviewOpen.value = true
+}
+
+async function removeMaterial(item: MaterialAsset): Promise<void> {
+  try {
+    await ElMessageBox.confirm(`删除素材「${item.fileName}」？已有活动中的引用会保留，但显示为缺失。`, '删除素材', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      confirmButtonClass: 'el-button--danger',
+    })
+  } catch {
+    return
+  }
+  try {
+    await materialApi.remove(item.id)
+    materials.value = materials.value.filter((entry) => entry.id !== item.id)
+    if (materialPreview.value?.id === item.id) materialPreviewOpen.value = false
+    ElMessage.success('素材已删除')
+  } catch (err) {
+    requestError(err, '删除素材失败')
+  }
+}
+
+async function copyMaterialRef(item: MaterialAsset): Promise<void> {
+  const text = `material://${item.id}`
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success(`已复制 ${text}`)
+  } catch {
+    ElMessage.warning(`请手动复制：${text}`)
+  }
+}
+
+async function insertMaterialIntoPoint(item: MaterialAsset): Promise<void> {
+  const point = pointDetail.value
+  if (!point) {
+    ElMessage.warning('请先在目录中选择一个知识点')
+    return
+  }
+  const alt = item.caption || item.fileName
+  const markdown = `\n\n![${alt}](material://${item.id})\n`
+  try {
+    await courseLibraryApi.updatePoint(courseId.value, point.id, { content: `${point.content}${markdown}` })
+    pointDetail.value = await courseLibraryApi.point(point.id)
+    ElMessage.success('已插入当前知识点正文')
+  } catch (err) {
+    requestError(err, '插入正文失败')
   }
 }
 
@@ -521,6 +626,66 @@ function masteryClass(state: string): string {
         </div>
       </section>
 
+      <!-- 课程素材（P1.7-D） -->
+      <section v-loading="materialLoading" class="materials">
+        <header class="materials-head">
+          <div class="materials-title-wrap">
+            <span class="materials-title">课程素材</span>
+            <span class="materials-note">图片 / 音频 / 视频 · AI 只读取文件名与描述，不会假装观看或听取</span>
+          </div>
+          <div class="materials-actions">
+            <el-input
+              v-model="materialCaption"
+              size="small"
+              maxlength="200"
+              placeholder="素材描述（可选，帮助 AI 理解）"
+              class="caption-input"
+            />
+            <el-button :icon="Upload" size="small" :loading="materialUploading" @click="pickMaterial">
+              上传素材
+            </el-button>
+            <input
+              ref="materialInput"
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp,audio/mpeg,audio/wav,audio/ogg,audio/mp4,video/mp4,video/webm"
+              hidden
+              @change="onMaterialFile"
+            />
+          </div>
+        </header>
+
+        <p v-if="!materials.length" class="materials-empty">
+          还没有素材。上传后可用 <code>material://ID</code> 在知识点正文或教学活动中引用；单文件上限 50 MB。
+        </p>
+        <div v-else class="material-grid">
+          <article v-for="item in materials" :key="item.id" class="material-card">
+            <button type="button" class="material-preview" @click="openMaterial(item)">
+              <img v-if="item.kind === 'image'" :src="item.url" :alt="item.fileName" loading="lazy" />
+              <span v-else class="material-icon">
+                <el-icon :size="22">
+                  <VideoCamera v-if="item.kind === 'video'" />
+                  <Microphone v-else />
+                </el-icon>
+              </span>
+            </button>
+            <div class="material-meta">
+              <p class="material-name" :title="item.fileName">{{ item.fileName }}</p>
+              <p class="material-sub">
+                {{ item.kind }} · {{ formatBytes(item.sizeBytes) }} · {{ formatDateTime(item.createdAt) }}
+              </p>
+              <p v-if="item.caption" class="material-caption">{{ item.caption }}</p>
+            </div>
+            <div class="material-tools">
+              <el-button link :icon="CopyDocument" @click="copyMaterialRef(item)">复制引用</el-button>
+              <el-button v-if="item.kind === 'image'" link :icon="Document" @click="insertMaterialIntoPoint(item)">
+                插入正文
+              </el-button>
+              <el-button link type="danger" :icon="Delete" @click="removeMaterial(item)">删除</el-button>
+            </div>
+          </article>
+        </div>
+      </section>
+
       <!-- 目录 + 阅读面板 -->
       <div class="workspace">
         <aside class="toc">
@@ -768,6 +933,25 @@ function masteryClass(state: string): string {
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 素材预览 -->
+    <el-dialog v-model="materialPreviewOpen" :title="materialPreview?.fileName ?? '素材预览'" width="720px">
+      <template v-if="materialPreview">
+        <img
+          v-if="materialPreview.kind === 'image'"
+          :src="materialPreview.url"
+          :alt="materialPreview.fileName"
+          class="preview-material"
+        />
+        <audio v-else-if="materialPreview.kind === 'audio'" :src="materialPreview.url" controls class="preview-audio" />
+        <video v-else :src="materialPreview.url" controls class="preview-material" />
+        <p v-if="materialPreview.caption" class="preview-caption">{{ materialPreview.caption }}</p>
+        <p class="preview-meta">
+          {{ materialPreview.kind }} · {{ formatBytes(materialPreview.sizeBytes) }} ·
+          {{ formatDateTime(materialPreview.createdAt) }}
+        </p>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -986,6 +1170,160 @@ function masteryClass(state: string): string {
   font-size: 12px;
   color: var(--ml-text-3);
   line-height: 1.7;
+}
+
+/* ---------- 课程素材 ---------- */
+.materials {
+  margin-top: 18px;
+  padding: 14px 18px;
+  border: 1px solid var(--ml-border);
+  border-radius: var(--ml-radius-lg);
+  background: var(--ml-bg-soft);
+}
+
+.materials-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.materials-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ml-text);
+}
+
+.materials-note {
+  margin-left: 10px;
+  font-size: 11.5px;
+  color: var(--ml-text-3);
+}
+
+.materials-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.caption-input {
+  width: 220px;
+}
+
+.materials-empty {
+  margin: 12px 0 2px;
+  font-size: 12.5px;
+  color: var(--ml-text-3);
+  line-height: 1.7;
+}
+
+.materials-empty code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--ml-surface-2);
+  font-family: var(--ml-font-mono);
+  font-size: 11.5px;
+}
+
+.material-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.material-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--ml-border);
+  border-radius: var(--ml-radius);
+  background: var(--ml-surface);
+}
+
+.material-preview {
+  display: grid;
+  place-items: center;
+  height: 116px;
+  padding: 0;
+  overflow: hidden;
+  border: none;
+  border-radius: var(--ml-radius-sm);
+  background: var(--ml-bg-soft);
+  cursor: pointer;
+}
+
+.material-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.material-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--ml-surface-2);
+  color: var(--ml-text-3);
+}
+
+.material-meta {
+  min-width: 0;
+}
+
+.material-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--ml-text);
+}
+
+.material-sub,
+.material-caption {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--ml-text-3);
+  line-height: 1.5;
+}
+
+.material-caption {
+  color: var(--ml-text-2);
+}
+
+.material-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: auto;
+}
+
+.preview-material {
+  width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+  border-radius: var(--ml-radius);
+  background: #000;
+}
+
+.preview-audio {
+  width: 100%;
+}
+
+.preview-caption,
+.preview-meta {
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--ml-text-2);
+}
+
+.preview-meta {
+  font-size: 11.5px;
+  color: var(--ml-text-3);
 }
 
 /* ---------- 目录 + 阅读面板 ---------- */
