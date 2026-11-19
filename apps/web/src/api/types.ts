@@ -97,6 +97,8 @@ export interface KnowledgePoint {
   learningStatus: LearningStatus
   masteryState: MasteryState
   masteryLabel: string
+  masteryLevelLabel?: string
+  stableMastery?: boolean
   lastStudiedAt: string | null
 }
 
@@ -169,6 +171,9 @@ export interface KnowledgePointDetail {
   learningStatus: LearningStatus
   masteryState: MasteryState
   masteryLabel: string
+  masteryLevel?: number
+  masteryLevelLabel?: string
+  stableMastery?: boolean
   lastStudiedAt: string | null
   previousId: number | null
   nextId: number | null
@@ -191,6 +196,9 @@ export interface RecentStudy {
   learningStatus: LearningStatus
   masteryState: MasteryState
   masteryLabel: string
+  masteryLevel?: number
+  masteryLevelLabel?: string
+  stableMastery?: boolean
   lastStudiedAt: string
 }
 
@@ -284,12 +292,107 @@ export interface StopStreamResult {
   message: string
 }
 
-export type TeachingStage = 'TEACH' | 'DEMO' | 'CHECK' | 'PAIR' | 'VERIFY' | 'NEXT'
+export type TeachingStage =
+  | 'TEACH'
+  | 'DEMO'
+  | 'CHECK'
+  | 'PAIR'
+  | 'VERIFY'
+  | 'NEXT'
+  | 'UNDERSTAND'
+  | 'DEMONSTRATE'
+  | 'INTERACT'
+  | 'PRACTICE'
+  | 'CONSOLIDATE'
 export type TeachingAction = 'START' | 'CONTINUE' | 'ANSWER' | 'ASK' | 'EXPLAIN_AGAIN' | 'CHANGE_EXAMPLE' | 'GIVE_HINT' | 'DONT_UNDERSTAND' | 'TRY_MYSELF' | 'REGENERATE' | 'PAUSE' | 'RESUME' | 'NEXT' | 'RESTART'
+
+export interface TeachingStageMeta {
+  key: string
+  label: string
+  goal: string
+  order: number
+  family: string
+  optional: boolean
+}
+
+export interface SubjectProfileMeta {
+  key: string
+  label: string
+  description: string
+  explanationStyle: string
+  exampleStrategy: string
+  preferredActivities: string[]
+  practiceDesign: string
+  masteryEvidence: string
+}
+
+export interface TeachingMeta {
+  defaultPipelineVersion: number
+  pipelines: Record<string, TeachingStageMeta[]>
+  activityTypes: string[]
+  subjectProfiles: SubjectProfileMeta[]
+}
+
+export interface ActivityContentBlock {
+  kind: string
+  text?: string
+  language?: string
+  code?: string
+  expression?: string
+  display?: boolean
+  tone?: string
+  caption?: string
+  format?: string
+  payload?: string
+  items?: { title: string; body?: string }[]
+  headers?: string[]
+  rows?: string[][]
+  [key: string]: unknown
+}
+
+export interface ActivityDefinition {
+  schemaVersion: number
+  type: string
+  stage: string
+  knowledgePointId: number
+  title: string
+  objective: string
+  content: ActivityContentBlock[]
+  interaction: {
+    inputKind: string
+    prompt: string
+    payload: Record<string, unknown>
+  }
+  evaluation: {
+    mode: string
+    passThreshold?: number
+    evidenceRule?: string
+    allowHints?: boolean
+    maxHints?: number
+    feedbackPolicy?: string
+  }
+  applicable?: boolean
+  difficulty?: number
+  meta?: Record<string, unknown>
+}
+
+export interface CurrentActivity {
+  id: number
+  activityType: string
+  stage: string
+  status: string
+  attemptNo: number
+  hintCount: number
+  definition: ActivityDefinition
+  studentInput: string
+  result: Record<string, unknown> | null
+  aiFeedback: string
+}
 
 export interface TeachingState {
   sessionId: number
   revision: number
+  pipelineVersion?: number
   currentStage: TeachingStage
   stageStatus: 'PENDING' | 'ACTIVE' | 'WAITING_USER' | 'COMPLETED' | 'BLOCKED'
   paused: boolean
@@ -298,11 +401,13 @@ export interface TeachingState {
   allowedActions: TeachingAction[]
   completedStages: TeachingStage[]
   currentQuestion: string | null
+  currentActivity?: CurrentActivity | null
   pairStep: number
   pairTotalSteps: number
   checkAttempts: number
   pairAttempts: number
   verifyAttempts: number
+  stageCounters?: Record<string, number>
   hintCount: number
   verifyHintCount: number
   backtrackCount: number
@@ -324,6 +429,7 @@ export type MasteryState =
   | 'GUIDED_PRACTICE'
   | 'INDEPENDENT'
   | 'NEEDS_REVIEW'
+  | 'STABLE'
 
 export interface LearningActivityState {
   id: number
@@ -439,6 +545,9 @@ export interface MasteryPoint {
   title: string
   masteryState: MasteryState
   masteryLabel: string
+  masteryLevel?: number
+  masteryLevelLabel?: string
+  stableMastery?: boolean
   learningStatus: LearningStatus
   masteryUpdatedAt: string | null
   lastChangedAt: string | null
@@ -461,6 +570,7 @@ export interface MasteryCourse {
 export interface MasteryOverview {
   total: number
   states: MasteryCount[]
+  levels?: { level: number; label: string; count: number }[]
   courses: MasteryCourse[]
 }
 
@@ -526,6 +636,7 @@ export interface MistakeRecord {
   chapterTitle: string
   sessionId: number
   activityId: number | null
+  activityType?: string | null
   stage: string
   errorType: 'concept' | 'practice' | 'verification'
   errorTypeLabel: string

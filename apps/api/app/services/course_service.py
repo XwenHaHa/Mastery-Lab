@@ -43,7 +43,7 @@ from ..schemas.course import (
     ReorderRequest,
     StatusCounts,
 )
-from . import learning, mastery
+from . import learning, mastery, material_library
 from .materials import SavedMaterial, delete_material_files
 from .md_parser import ParsedMaterial, _summarize
 
@@ -334,6 +334,8 @@ def delete_course(session: Session, course_id: int) -> None:
     """删除课程：章节、知识点、学习状态随 ORM 级联一起删除，再清理教材文件。"""
     course = get_course(session, course_id)
     source_file = course.source_file
+    # P1.6-G：素材文件不在 ORM 级联范围内，先按课程清理。
+    material_library.delete_course_assets(session, course_id)
     session.delete(course)
     session.commit()
     delete_material_files(source_file)

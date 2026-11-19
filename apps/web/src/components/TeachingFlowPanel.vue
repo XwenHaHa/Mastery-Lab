@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import type { TeachingAction, TeachingStage, TeachingState } from '@/api/types'
+import { computed, onMounted } from 'vue'
 
-defineProps<{ state: TeachingState; busy: boolean; controlBusy: boolean; hasModel: boolean }>()
+import type { TeachingAction, TeachingState } from '@/api/types'
+import { useTeachingMetaStore } from '@/stores/teachingMeta'
+
+const props = defineProps<{ state: TeachingState; busy: boolean; controlBusy: boolean; hasModel: boolean }>()
 defineEmits<{ action: [action: TeachingAction] }>()
 
-const stages: { id: TeachingStage; label: string }[] = [
-  { id: 'TEACH', label: '讲解' }, { id: 'DEMO', label: '演示' }, { id: 'CHECK', label: '理解检查' },
-  { id: 'PAIR', label: '共同实践' }, { id: 'VERIFY', label: '独立验证' }, { id: 'NEXT', label: '本节总结' },
-]
+const teachingMeta = useTeachingMetaStore()
+const stages = computed(() => teachingMeta.stagesFor(props.state.pipelineVersion))
+onMounted(() => teachingMeta.ensureLoaded())
+
 const actions: { id: TeachingAction; label: string }[] = [
   { id: 'START', label: '开始当前步骤' }, { id: 'CONTINUE', label: '继续下一步' },
   { id: 'EXPLAIN_AGAIN', label: '再讲一遍' }, { id: 'CHANGE_EXAMPLE', label: '换个例子' },
@@ -21,7 +24,7 @@ const statusLabels = { PENDING: '待开始', ACTIVE: '老师正在准备', WAITI
 <template>
   <section class="teaching-panel" aria-label="教学流程">
     <ol class="teaching-stages">
-      <li v-for="stage in stages" :key="stage.id" :class="{ current: state.currentStage === stage.id, finished: state.completedStages.includes(stage.id) }" :aria-current="state.currentStage === stage.id ? 'step' : undefined">
+      <li v-for="stage in stages" :key="stage.key" :class="{ current: state.currentStage === stage.key, finished: state.completedStages.includes(stage.key as TeachingState['currentStage']) }" :aria-current="state.currentStage === stage.key ? 'step' : undefined">
         <span>{{ stage.label }}</span>
       </li>
     </ol>
@@ -31,7 +34,7 @@ const statusLabels = { PENDING: '待开始', ACTIVE: '老师正在准备', WAITI
     </div>
     <p class="teaching-next">{{ state.nextStep }}<template v-if="state.currentStage === 'PAIR'"> · 小步骤 {{ state.pairStep }}/{{ state.pairTotalSteps }}</template></p>
     <p v-if="state.legacyCompletion" class="teaching-note">保留历史手工完成记录；不代表通过本轮教学验证。</p>
-    <p v-if="state.currentStage === 'VERIFY' || state.currentStage === 'NEXT'" class="teaching-note">验证帮助 {{ state.verifyHintCount }} 次 · {{ state.masteryState === 'INDEPENDENT' ? '本轮独立完成（不等于长期掌握）' : '依据文本与代码片段评价，未执行代码' }}</p>
+    <p v-if="state.currentStage === 'VERIFY' || state.currentStage === 'NEXT'" class="teaching-note">验证帮助 {{ state.verifyHintCount }} 次 · {{ state.masteryState === 'STABLE' ? '已具备跨轮稳定掌握证据' : state.masteryState === 'INDEPENDENT' ? '本轮独立完成（不等于长期掌握）' : '依据提交内容评价，未执行代码或操作' }}</p>
     <p v-if="state.summary && state.currentStage === 'NEXT'" class="teaching-summary">{{ state.summary }}</p>
     <p v-if="state.errorMessage" class="teaching-error" role="alert">{{ state.errorMessage }}</p>
     <div class="teaching-actions">

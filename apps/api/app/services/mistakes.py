@@ -24,7 +24,7 @@ from ..db.models import (
     TeachingOperation,
     TeachingProgress,
 )
-from . import learning_record
+from . import learning_record, teaching_stages
 
 ERROR_TYPES = {
     "CHECK": "concept",
@@ -60,6 +60,7 @@ def dedupe_key(point_id: int, stage: str, answer: str, misconceptions: list[str]
 def is_error(stage: str, verdict: str | None) -> bool:
     if not verdict:
         return False
+    stage = teaching_stages.evaluation_stage_key(stage)
     if stage == "CHECK":
         return verdict in ("INCORRECT", "PARTIAL")
     if stage == "PAIR":
@@ -80,6 +81,7 @@ def record_mistake(
     reason: str,
     feedback: str,
     misconceptions: list[str],
+    activity_type: str | None = None,
 ) -> MistakeRecord | None:
     if not is_error(stage, verdict):
         return None
@@ -104,7 +106,8 @@ def record_mistake(
             session_id=operation.session_id,
             activity_id=activity.id if activity else None,
             stage=stage,
-            error_type=ERROR_TYPES.get(stage, "concept"),
+            error_type=ERROR_TYPES.get(teaching_stages.evaluation_stage_key(stage), "concept"),
+            activity_type=activity_type,
             dedupe_key=key,
             question=question,
             user_answer=answer,
@@ -121,6 +124,7 @@ def record_mistake(
         db.flush()
     else:
         record.activity_id = activity.id if activity else record.activity_id
+        record.activity_type = activity_type or record.activity_type
         record.question = question or record.question
         record.user_answer = answer or record.user_answer
         record.correct_answer = feedback or record.correct_answer

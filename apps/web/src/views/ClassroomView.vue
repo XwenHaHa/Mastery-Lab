@@ -31,7 +31,9 @@ import type {
 } from '@/api/types'
 import { formatRelative, statusLabel } from '@/utils/learning'
 import { renderMarkdown } from '@/utils/markdown'
+import { useTeachingMetaStore } from '@/stores/teachingMeta'
 import TeachingFlowPanel from '@/components/TeachingFlowPanel.vue'
+import ActivityRenderer from '@/components/ActivityRenderer.vue'
 
 interface QuickAction {
   id: string
@@ -44,7 +46,7 @@ const QUICK_ACTIONS: QuickAction[] = [
   { id: 'example', label: '换个例子', prompt: '请换一个更贴近日常生活的例子来说明当前知识点。' },
   { id: 'slower', label: '慢一点讲', prompt: '请放慢节奏，把当前知识点拆成更小的步骤重新讲一遍。' },
   { id: 'project', label: '举实际项目例子', prompt: '请举一个实际项目中会用到当前知识点的例子，并说明为什么这样用。' },
-  { id: 'code', label: '解释这段代码', prompt: '请解释你刚才给出的示例代码，逐段说明关键语句的作用和预期输出。' },
+  { id: 'code', label: '解释这个示例', prompt: '请解释你刚才给出的示例，逐步说明关键步骤、依据和预期结果。' },
   { id: 'question', label: '我有一个问题' },
 ]
 
@@ -109,6 +111,8 @@ let suppressDraftSave = false
 let listenersBound = false
 let breakpointReady = false
 
+const teachingMeta = useTeachingMetaStore()
+
 const STAGE_TEXT: Record<string, string> = {
   TEACH: '讲解',
   DEMO: '演示',
@@ -116,10 +120,15 @@ const STAGE_TEXT: Record<string, string> = {
   PAIR: '陪练',
   VERIFY: '独立验证',
   NEXT: '已完成',
+  UNDERSTAND: '认识问题',
+  DEMONSTRATE: '示范演示',
+  INTERACT: '互动检查',
+  PRACTICE: '引导练习',
+  CONSOLIDATE: '巩固总结',
 }
 
 function stageText(stage: string | null | undefined): string {
-  return STAGE_TEXT[stage ?? ''] ?? stage ?? ''
+  return teachingMeta.stageLabel(stage) || STAGE_TEXT[stage ?? ''] || stage || ''
 }
 
 function touchActivity(): void {
@@ -368,7 +377,10 @@ watch([draft, inputMode], ([value, mode]) => {
   scheduleSave()
 })
 
-onMounted(bindActivityListeners)
+onMounted(() => {
+  bindActivityListeners()
+  teachingMeta.ensureLoaded()
+})
 
 onBeforeUnmount(() => {
   saveOnExit()
@@ -572,8 +584,7 @@ async function teachingAction(action: TeachingAction, content = ''): Promise<voi
   await runStream(`/classroom/sessions/${sid}/teaching/actions`, payload)
 }
 
-async function send(text?: string): Promise<void> {
-  const content = (text ?? draft.value).trim()
+async function send(text?: string): Promise<void> {  const content = (text ?? draft.value).trim()
   const action = text === undefined ? inputMode.value : 'ASK'
   if (!content || busy.value || !session.value?.model || !teaching.value?.allowedActions.includes(action)) return
   if (content.length > 8000) {
@@ -589,6 +600,11 @@ async function send(text?: string): Promise<void> {
 
 async function regenerate(): Promise<void> {
   await teachingAction('REGENERATE')
+}
+
+function submitActivity(value: string): void {
+  draft.value = value
+  void send()
 }
 
 async function runStream(path: string, body: unknown): Promise<void> {
@@ -990,7 +1006,7 @@ function chapterPoints(chapter: Chapter): KnowledgePoint[] {
 
             <div v-if="!messages.length && !streaming && !loadingSession" class="empty-hint">
               <h3>准备开始这个知识点的学习</h3>
-              <p>老师会先讲清楚它解决什么问题，再给出完整案例，最后逐段解释代码。</p>
+              <p>老师会先讲清楚它解决什么问题，再给出完整示例，最后逐步解释关键步骤。</p>
             </div>
           </div>
         </div>
@@ -1016,7 +1032,17 @@ function chapterPoints(chapter: Chapter): KnowledgePoint[] {
             <span>只有提交回答会进行评价；自由提问不会推进阶段。</span>
           </div>
           <div class="composer-box">
+            <ActivityRenderer
+              v-if="inputMode === 'ANSWER' && teaching?.currentActivity"
+              :key="teaching.currentActivity.id"
+              :activity="teaching.currentActivity"
+              :model-value="draft"
+              :disabled="!session || loadingSession || busy || teaching?.paused"
+              @update:model-value="draft = $event"
+              @submit="submitActivity"
+            />
             <el-input
+              v-else
               ref="composerRef"
               v-model="draft"
               type="textarea"
@@ -1025,7 +1051,7 @@ function chapterPoints(chapter: Chapter): KnowledgePoint[] {
               :disabled="!session || loadingSession || teaching?.paused"
               aria-label="向 AI 老师提问"
               :maxlength="8000"
-              :placeholder="inputMode === 'ANSWER' ? '写下你的解释或代码片段……（Enter 提交，Shift+Enter 换行）' : '随时向老师提问……（Enter 发送，Shift+Enter 换行）'"
+              :placeholder="inputMode === 'ANSWER' ? '写下你的解释或回答……（Enter 提交，Shift+Enter 换行）' : '随时向老师提问……（Enter 发送，Shift+Enter 换行）'"
               @keydown="onKeydown"
             />
             <div class="composer-actions">

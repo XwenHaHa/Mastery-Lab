@@ -278,3 +278,82 @@ P1.5 新增 6 张表，并在 `knowledge_points` 增加 `mastery_state`、`maste
 - 不新增对旧表的必填字段；`chat_messages`、`teaching_*`、`learning_sessions` 保持原结构；
 - P1.4 的 `teaching_progress` 仍是教学阶段与评价的事实来源，P1.5 不复制一套教学状态；
 - 删除课程会同时删除该课程的活动与错题；若用户需要保留历史，应在删除前导出数据库备份。
+
+## 9. P1.6 通用教学结构（schema 7–9）
+
+P1.6 只做增量：新增列全部带默认值，新表由 `create_all()` 创建，旧数据不回写、不重算。
+`SCHEMA_VERSION` 当前为 `9`。
+
+### 9.1 `teaching_progress` 增量列（schema 7）
+
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| `pipeline_version` | INTEGER NOT NULL DEFAULT 1 | 1=旧六阶段，2=通用八阶段；只影响新会话，旧会话保持 1 |
+| `stage_counters` | TEXT NOT NULL DEFAULT '{}' | JSON：按阶段记录尝试/提示次数 |
+
+### 9.2 新表 `teaching_activity_instances`（schema 7）
+
+| 字段 | 类型/约束 | 用途 |
+| --- | --- | --- |
+| id | INTEGER PK | 活动实例 ID |
+| session_id / course_id / knowledge_point_id | FK，CASCADE，索引 | 归属 |
+| operation_id | 可空 FK `teaching_operations.id`，SET NULL | 对应的教学操作 |
+| prompt_message_id / answer_message_id | 可空 FK `chat_messages.id`，SET NULL | 题面与作答消息 |
+| stage | VARCHAR(32) | 所属教学阶段 |
+| activity_type | VARCHAR(32) | 14 类通用活动之一 |
+| schema_version | INTEGER | 活动协议版本 |
+| status | VARCHAR(24)，索引 | PENDING / COMPLETED 等 |
+| attempt_no / hint_count | INTEGER | 本轮尝试次数与提示次数 |
+| definition_json / result_json | TEXT | 活动定义与学生结果 |
+| student_input / ai_feedback | TEXT | 学生输入与 AI 反馈 |
+| started_at / completed_at / created_at / updated_at | DATETIME | UTC |
+
+写入策略是**双写**：旧读取路径仍以 `teaching_progress.current_question` 为准，本表用于审计与前端渲染，
+不改变既有教学状态机。
+
+### 9.3 `mastery_history` 增量列（schema 8）
+
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| `evidence_type` | VARCHAR(32) NOT NULL DEFAULT 'STATE_CHANGE' | STATE_CHANGE / VERIFY_INDEPENDENT / VERIFY_EVIDENCE / LEVEL_SYNC |
+| `stage` | VARCHAR(32) NOT NULL DEFAULT '' | 产生证据的阶段 |
+| `activity_type` | VARCHAR(32) NULL | 产生证据的活动类型 |
+| `verdict` | VARCHAR(24) NULL | 评价结论 |
+| `hint_count` | INTEGER NOT NULL DEFAULT 0 | 本轮使用提示次数 |
+| `round_number` | INTEGER NOT NULL DEFAULT 0 | 轮次，用于跨轮独立证据判定 |
+| `pipeline_version` | INTEGER NOT NULL DEFAULT 1 | 产生证据时的流程版本 |
+
+长期掌握 0–5 级只由这些证据推导，不由前端写入；一次 VERIFY 独立通过最多到 4 级，
+两次跨轮/跨会话独立通过（间隔 ≥24h）并完成巩固才到 5 级，失败不降低长期等级。
+
+### 9.4 `mistake_records` 增量列（schema 8）
+
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| `activity_type` | VARCHAR(32) NULL | 由活动类型替代旧的自由文本分类；旧值仍可读 |
+
+### 9.5 新表 `materials`（schema 9）
+
+| 字段 | 类型/约束 | 用途 |
+| --- | --- | --- |
+| id | INTEGER PK | 素材 ID，即 `material://ID` 中的 ID |
+| course_id | FK courses.id，CASCADE，索引 | 所属课程 |
+| file_name | VARCHAR(200) | 原始文件名（仅展示） |
+| relative_path | VARCHAR(400) | 服务端生成的相对路径 |
+| mime_type | VARCHAR(120) | 校验后的 MIME |
+| kind | VARCHAR(16)，索引 | image / audio / video |
+| size_bytes / sha256 | INTEGER / VARCHAR(64) | 体积与内容摘要 |
+| caption | TEXT | 说明文字 |
+| source_ref | TEXT | JSON：来源定位（教材页、时间段等） |
+| created_at | DATETIME | UTC |
+
+文件本体存放在 `data/materials/<course_id>/`，数据库不保存用户输入路径。删除素材删除行与文件；
+删除课程级联删除素材行并清理对应目录。
+
+### 9.6 兼容与验证
+
+- `_ensure_columns()` 只加列，`create_all()` 只补缺失表，迁移幂等；
+- 真实数据库副本上验证：`materials`、`teaching_activity_instances` 建表成功，
+  旧表行数与内容不变（courses 4 / chapters 10 / knowledge_points 19 / learning_sessions 5 /
+  teaching_progress 3 / mastery_history 6 / mistake_records 2），原库 sha256 不变；
+- 素材上传、读取、列表、删除在副本上均返回 201/200，内容类型为 `image/png`。

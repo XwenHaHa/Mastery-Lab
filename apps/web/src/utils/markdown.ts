@@ -6,8 +6,9 @@
  * 这里的策略是 **先转义、再按行组装标签**，因此用户/教材里的 HTML 永远不会被当成标签执行。
  *
  * 支持：标题、段落、代码围栏（带语言标识，常见语言有轻量高亮）、行内代码、粗体/斜体/删除线、
- * 有序与无序列表（含一层缩进嵌套）、引用、分隔线、表格、链接、KaTeX 数学公式。
- * 不支持（也不打算支持）：裸 HTML、图片、脚注、Mermaid——出现时按普通文本或代码显示。
+ * 有序与无序列表（含一层缩进嵌套）、引用、分隔线、表格、链接、图片、KaTeX 数学公式。
+ * 图片只允许 http(s) 或站内材料地址（material://ID），其他来源降级为纯文本。
+ * 不支持（也不打算支持）：裸 HTML、脚注、Mermaid——出现时按普通文本或代码显示。
  */
 
 import katex from 'katex'
@@ -35,6 +36,24 @@ function safeHref(raw: string): string | null {
   return null
 }
 
+/** 只允许 http(s) 与站内材料地址；material://ID 重写为材料读取接口。 */
+function safeImageSrc(raw: string): string | null {
+  const src = raw.trim()
+  if (!src) return null
+  if (/^https?:\/\//i.test(src)) return src
+  if (/^\/api\/v1\/materials\/\d+\/content$/.test(src)) return src
+  const material = /^material:\/\/(\d+)$/i.exec(src)
+  return material ? `/api/v1/materials/${material[1]}/content` : null
+}
+
+function renderImage(alt: string, rawSrc: string): string | null {
+  const src = safeImageSrc(rawSrc)
+  if (!src) return null
+  const safeAlt = escapeHtml(alt)
+  const safeSrc = escapeHtml(src)
+  return `<figure class="md-image" style="margin:10px 0;"><img src="${safeSrc}" alt="${safeAlt}" loading="lazy" decoding="async" style="max-width:100%;height:auto;border-radius:6px;" />${alt ? `<figcaption style="color:var(--ml-text-3);font-size:12px;margin-top:4px;">${safeAlt}</figcaption>` : ''}</figure>`
+}
+
 /** 用 KaTeX 渲染公式；失败时返回 null，由调用方退回原始文本，绝不把错误 HTML 塞进页面。 */
 function renderMath(expression: string, display: boolean): string | null {
   const source = expression.trim()
@@ -53,9 +72,18 @@ function renderMath(expression: string, display: boolean): string | null {
 }
 
 function renderInline(text: string): string {
-  // 先摘出行内代码，避免 `$...$` 出现在代码里时被误判成公式
+  // 先摘出图片，避免其中的 []() 被后续链接规则误处理
+  const images: string[] = []
+  let out = text.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (match, alt: string, src: string) => {
+    const html = renderImage(alt, src)
+    if (!html) return match
+    images.push(html)
+    return `\u0000IMAGE${images.length - 1}\u0000`
+  })
+
+  // 再摘出行内代码，避免 `$...$` 出现在代码里时被误判成公式
   const codes: string[] = []
-  let out = text.replace(/`([^`]+)`/g, (_match, code: string) => {
+  out = out.replace(/`([^`]+)`/g, (_match, code: string) => {
     codes.push(escapeHtml(code))
     return `\u0000CODE${codes.length - 1}\u0000`
   })
@@ -75,8 +103,8 @@ function renderInline(text: string): string {
   out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_match, label: string, href: string) => {
     const safe = safeHref(href)
     if (!safe) return label
-    // href 与 label 都来自已转义文本，这里不能再转义一次（会变成 &amp;amp;）
-    return `<a href="${safe}" target="_blank" rel="noreferrer noopener">${label}</a>`
+    // label 来自已转义文本，不能再转义一次（会变成 &amp;amp;）；href 需要转义防止属性逃逸
+    return `<a href="${escapeHtml(safe)}" target="_blank" rel="noreferrer noopener">${label}</a>`
   })
   out = out.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
   out = out.replace(/__([^_\n]+)__/g, '<strong>$1</strong>')
@@ -85,6 +113,7 @@ function renderInline(text: string): string {
 
   out = out.replace(/\u0000CODE(\d+)\u0000/g, (_match, index: string) => `<code>${codes[Number(index)]}</code>`)
   out = out.replace(/\u0000MATH(\d+)\u0000/g, (_match, index: string) => maths[Number(index)])
+  out = out.replace(/\u0000IMAGE(\d+)\u0000/g, (_match, index: string) => images[Number(index)])
   return out
 }
 
@@ -97,6 +126,7 @@ const OL = /^(\s*)\d+[.)]\s+(.*)$/
 const TABLE = /^\s*\|.*\|\s*$/
 const TABLE_DIVIDER = /^\s*\|?[\s:|-]+\|[\s:|-]*$/
 const DISPLAY_MATH = /^\s*\$\$/
+const IMAGE_LINE = /^\s*!\[([^\]]*)\]\(([^)\s]+)\)\s*$/
 
 export function renderMarkdown(source: string): string {
   const lines = (source ?? '').replace(/\r\n?/g, '\n').split('\n')
@@ -175,6 +205,17 @@ export function renderMarkdown(source: string): string {
       continue
     }
 
+    // ---- 独立图片 ----
+    const image = line.match(IMAGE_LINE)
+    if (image) {
+      const markup = renderImage(image[1], image[2])
+      if (markup) {
+        html.push(markup)
+        index += 1
+        continue
+      }
+    }
+
     // ---- 引用 ----
     if (QUOTE.test(line)) {
       const body: string[] = []
@@ -234,6 +275,7 @@ function isBlockStart(line: string): boolean {
     DISPLAY_MATH.test(line) ||
     HEADING.test(line) ||
     HR.test(line) ||
+    IMAGE_LINE.test(line) ||
     QUOTE.test(line) ||
     UL.test(line) ||
     OL.test(line) ||

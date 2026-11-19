@@ -2,10 +2,12 @@
 
 from fastapi import APIRouter
 
-from . import classroom, courses, health, learning, models, teaching
+from . import classroom, courses, health, learning, materials, meta, models, teaching
 
 api_router = APIRouter()
 api_router.include_router(health.router)
+api_router.include_router(meta.router)
+api_router.include_router(materials.router)
 api_router.include_router(models.router)
 api_router.include_router(courses.router)
 api_router.include_router(courses.node_router)

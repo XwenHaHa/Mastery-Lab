@@ -238,6 +238,9 @@ class TeachingProgress(Base):
 
     session_id: Mapped[int] = mapped_column(ForeignKey("learning_sessions.id", ondelete="CASCADE"), primary_key=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # P1.6：1=旧六阶段，2=通用八阶段。旧行缺省按 1 处理，不回写历史。
+    pipeline_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    stage_counters: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     current_stage: Mapped[str] = mapped_column(String(16), nullable=False, default="TEACH")
     stage_status: Mapped[str] = mapped_column(String(24), nullable=False, default="PENDING")
     paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -313,6 +316,80 @@ class TeachingEvaluation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
+class Material(Base):
+    """课程素材（P1.6-G）：图片、音频、视频。
+
+    文件落盘在 data/materials/<course_id>/ 下，数据库只保存服务端生成的相对路径。
+    教学活动和 Markdown 只能通过 material_id 引用，避免任意外链与 base64 内联。
+    """
+
+    __tablename__ = "materials"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    course_id: Mapped[int] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    file_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    relative_path: Mapped[str] = mapped_column(String(400), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    caption: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_ref: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class TeachingActivityInstance(Base):
+    """一次教学活动的实例（P1.6-B，只写不读）。
+
+    与 `learning_activities` 不同：后者表示一次学习计时；
+    本表表示某个阶段里学生实际完成的一个教学活动。
+    P1.6-B 只做双写与审计，旧读取路径仍是 teaching_progress.current_question。
+    """
+
+    __tablename__ = "teaching_activity_instances"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("learning_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    course_id: Mapped[int] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    knowledge_point_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_points.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    operation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("teaching_operations.id", ondelete="SET NULL"), nullable=True
+    )
+    prompt_message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True
+    )
+    answer_message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True
+    )
+
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    activity_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="PENDING", index=True)
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    hint_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    definition_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    student_input: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    ai_feedback: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
+    )
+
+
 class LearningActivity(Base):
     """一次可统计的学习活动（P1.5）。
 
@@ -383,6 +460,14 @@ class MasteryHistory(Base):
     )
     from_state: Mapped[str] = mapped_column(String(24), nullable=False)
     to_state: Mapped[str] = mapped_column(String(24), nullable=False)
+    # P1.6-F：证据类型（STATE_CHANGE / VERIFY_INDEPENDENT / VERIFY_EVIDENCE / LEVEL_SYNC）
+    evidence_type: Mapped[str] = mapped_column(String(32), nullable=False, default="STATE_CHANGE")
+    stage: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    activity_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    verdict: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    hint_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    round_number: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pipeline_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     evidence: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, index=True)
@@ -407,6 +492,8 @@ class MistakeRecord(Base):
 
     stage: Mapped[str] = mapped_column(String(16), nullable=False)
     error_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    # P1.6-F：活动类型，便于按选择题/计算题/实操等归类；旧概念/实践/验证分类继续保留。
+    activity_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     dedupe_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
 
     question: Mapped[str] = mapped_column(Text, nullable=False, default="")

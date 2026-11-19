@@ -260,12 +260,16 @@ def mastery_overview(db: Session, course_id: int | None = None, chapter_id: int 
             chapter_entry = {"chapterId": chapter.id, "title": chapter.title, "points": []}
             course_entry["chapters"].append(chapter_entry)
         history = latest.get(point.id)
+        level = mastery.effective_level(point)
         chapter_entry["points"].append(
             {
                 "pointId": point.id,
                 "title": point.title,
                 "masteryState": mastery.safe_state(point.mastery_state),
                 "masteryLabel": mastery.label(point.mastery_state),
+                "masteryLevel": level,
+                "masteryLevelLabel": mastery.level_label(level),
+                "stableMastery": level >= 5,
                 "learningStatus": learning.safe_status(point.learning_status),
                 "masteryUpdatedAt": utc(point.mastery_updated_at),
                 "lastChangedAt": utc(history.created_at) if history else None,
@@ -273,9 +277,17 @@ def mastery_overview(db: Session, course_id: int | None = None, chapter_id: int 
             }
         )
 
+    level_counts = {level: 0 for level in range(6)}
+    for point in points:
+        level = mastery.effective_level(point)
+        level_counts[level if level in level_counts else 0] += 1
     return {
         "total": len(points),
         "states": [{"state": state, "label": mastery.label(state), "count": counts[state]} for state in mastery.STATES],
+        "levels": [
+            {"level": level, "label": mastery.level_label(level), "count": level_counts[level]}
+            for level in range(6)
+        ],
         "courses": list(grouped.values()),
     }
 
@@ -452,6 +464,7 @@ def history_detail(db: Session, activity_id: int) -> dict:
                 "id": record.id,
                 "stage": record.stage,
                 "errorType": record.error_type,
+                "activityType": record.activity_type,
                 "question": record.question,
                 "userAnswer": record.user_answer,
                 "errorReason": record.error_reason,
@@ -559,6 +572,7 @@ def report(db: Session, *, course_id: int | None = None) -> dict:
                 else "",
                 "stage": record.stage,
                 "errorType": record.error_type,
+                "activityType": record.activity_type,
                 "occurrenceCount": record.occurrence_count,
                 "lastSeenAt": utc(record.last_seen_at),
             }

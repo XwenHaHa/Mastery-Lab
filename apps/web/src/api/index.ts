@@ -19,6 +19,7 @@ import type {
   ModelTestResult,
   SessionOpenPayload,
   StopStreamResult,
+  TeachingMeta,
   ArchiveOverview,
   BreakpointState,
   CourseLearningProgress,
@@ -35,6 +36,7 @@ import type {
 
 export const systemApi = {
   health: () => request<HealthPayload>('/health'),
+  teachingMeta: () => request<TeachingMeta>('/meta/teaching'),
 }
 
 export const modelApi = {

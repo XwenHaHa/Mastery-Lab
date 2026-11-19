@@ -96,9 +96,16 @@ def _sync_counters(activity: LearningActivity, progress: TeachingProgress | None
         return
     activity.final_stage = progress.current_stage
     activity.completed_stages = progress.completed_stages
-    activity.check_attempts = progress.check_attempts
-    activity.pair_attempts = progress.pair_attempts
-    activity.verify_attempts = progress.verify_attempts
+    if getattr(progress, "pipeline_version", 1) >= 2:
+        # v2 使用阶段级计数；同步到旧字段，保证历史列表仍可展示。
+        counters = json.loads(progress.stage_counters or "{}")
+        activity.check_attempts = int(counters.get("INTERACT", 0))
+        activity.pair_attempts = int(counters.get("PRACTICE", 0))
+        activity.verify_attempts = int(counters.get("VERIFY", 0))
+    else:
+        activity.check_attempts = progress.check_attempts
+        activity.pair_attempts = progress.pair_attempts
+        activity.verify_attempts = progress.verify_attempts
     activity.hint_count = progress.hint_count
     activity.verify_hint_count = progress.verify_hint_count
 

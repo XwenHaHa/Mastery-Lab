@@ -22,7 +22,7 @@ from .core.response import ApiResponse, AppError, success
 from .db import SessionLocal, init_db
 from .db.models import AppSetting
 
-SCHEMA_VERSION = "6"
+SCHEMA_VERSION = "9"
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),

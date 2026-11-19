@@ -42,6 +42,7 @@ const masteryMap: Record<MasteryState, string> = {
   GUIDED_PRACTICE: 'is-guided',
   INDEPENDENT: 'is-independent',
   NEEDS_REVIEW: 'is-needs-review',
+  STABLE: 'is-stable',
 }
 
 const stageLabels: Record<string, string> = {
@@ -944,6 +945,9 @@ onMounted(() => void loadAll())
 .is-needs-review {
   background: var(--ml-warning);
 }
+.is-stable {
+  background: var(--ml-success);
+}
 
 .mastery-courses {
   display: flex;
@@ -1037,6 +1041,7 @@ onMounted(() => void loadAll())
 .mastery-pill.is-guided { color: #d39a4e; }
 .mastery-pill.is-independent { color: var(--ml-success); }
 .mastery-pill.is-needs-review { color: var(--ml-warning); }
+.mastery-pill.is-stable { color: var(--ml-success); font-weight: 600; }
 
 .history-table {
   cursor: pointer;

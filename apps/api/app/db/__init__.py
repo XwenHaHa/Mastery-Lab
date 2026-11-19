@@ -59,6 +59,24 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "mastery_state": "ALTER TABLE knowledge_points ADD COLUMN mastery_state VARCHAR(24) NOT NULL DEFAULT 'NOT_STARTED'",
         "mastery_updated_at": "ALTER TABLE knowledge_points ADD COLUMN mastery_updated_at DATETIME",
     },
+    # P1.6：教学流程版本与活动级计数。旧会话保持 1，不重写历史。
+    "teaching_progress": {
+        "pipeline_version": "ALTER TABLE teaching_progress ADD COLUMN pipeline_version INTEGER NOT NULL DEFAULT 1",
+        "stage_counters": "ALTER TABLE teaching_progress ADD COLUMN stage_counters TEXT NOT NULL DEFAULT '{}'",
+    },
+    # P1.6-F：长期掌握证据与错题活动类型。
+    "mastery_history": {
+        "evidence_type": "ALTER TABLE mastery_history ADD COLUMN evidence_type VARCHAR(32) NOT NULL DEFAULT 'STATE_CHANGE'",
+        "stage": "ALTER TABLE mastery_history ADD COLUMN stage VARCHAR(32) NOT NULL DEFAULT ''",
+        "activity_type": "ALTER TABLE mastery_history ADD COLUMN activity_type VARCHAR(32)",
+        "verdict": "ALTER TABLE mastery_history ADD COLUMN verdict VARCHAR(24)",
+        "hint_count": "ALTER TABLE mastery_history ADD COLUMN hint_count INTEGER NOT NULL DEFAULT 0",
+        "round_number": "ALTER TABLE mastery_history ADD COLUMN round_number INTEGER NOT NULL DEFAULT 0",
+        "pipeline_version": "ALTER TABLE mastery_history ADD COLUMN pipeline_version INTEGER NOT NULL DEFAULT 1",
+    },
+    "mistake_records": {
+        "activity_type": "ALTER TABLE mistake_records ADD COLUMN activity_type VARCHAR(32)",
+    },
 }
 
 # P1.2 把旧的两种状态并入四态模型（learning → in_progress，mastered → completed）。
@@ -134,8 +152,10 @@ def _backfill_mastery() -> None:
         if _column_names(conn, "mastery_history"):
             conn.execute(text("""
                 INSERT INTO mastery_history
-                    (course_id, knowledge_point_id, session_id, activity_id, from_state, to_state, reason, evidence, created_at)
+                    (course_id, knowledge_point_id, session_id, activity_id, from_state, to_state,
+                     evidence_type, stage, hint_count, round_number, pipeline_version, reason, evidence, created_at)
                 SELECT ch.course_id, kp.id, NULL, NULL, 'NOT_STARTED', kp.mastery_state,
+                       'STATE_CHANGE', '', 0, 0, 1,
                        '迁移：根据已有教学进度或已验证完成记录回填', '{}', CURRENT_TIMESTAMP
                   FROM knowledge_points kp
                   JOIN chapters ch ON ch.id = kp.chapter_id

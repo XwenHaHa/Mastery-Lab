@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     classroom_history_chars: int = Field(default=14000, ge=1000)
     # 单份教材文件上限（字节），超出直接拒绝，不把超大文件读进内存
     max_material_bytes: int = 20 * 1024 * 1024
+    # 单份图片/音频/视频素材上限（字节）
+    max_asset_bytes: int = 50 * 1024 * 1024
+    # P1.6 教学流程版本：1=旧六阶段（默认），2=通用八阶段。只影响新会话。
+    teaching_pipeline_version: int = Field(default=1, ge=1, le=2)
 
     # ---- 派生路径 ----
     @property
@@ -68,6 +72,11 @@ class Settings(BaseSettings):
         return self.data_dir / "courses"
 
     @property
+    def materials_dir(self) -> Path:
+        """课程素材目录（P1.6-G）：data/materials/<course_id>/。"""
+        return self.data_dir / "materials"
+
+    @property
     def run_dir(self) -> Path:
         return self.data_dir / "run"
 
@@ -82,7 +91,7 @@ class Settings(BaseSettings):
         return f"sqlite:///{self.db_path.as_posix()}"
 
     def ensure_dirs(self) -> None:
-        for path in (self.data_dir, self.secrets_dir, self.uploads_dir, self.courses_dir, self.run_dir):
+        for path in (self.data_dir, self.secrets_dir, self.uploads_dir, self.courses_dir, self.materials_dir, self.run_dir):
             path.mkdir(parents=True, exist_ok=True)
 
 
