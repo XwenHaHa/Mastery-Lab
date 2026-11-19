@@ -1,4 +1,4 @@
-# Mastery Lab 架构（P0 至 P1.3 实际实现）
+# Mastery Lab 架构（P0 至 P1.5 实际实现）
 
 本文档描述**已经写进代码**的结构，不写理想化设计。未实现的部分统一在文末列出并说明原因。
 
@@ -271,3 +271,62 @@ PATCH /courses/{id}/chapters/{cid}/knowledge-points/reorder   {"ids": [31, 30]}
 - 没有拖拽排序：上下移按钮 + 全量 ID 提交已经满足「调整顺序并持久化」，拖拽留到有实际反馈需求时再做。
 - 章节/知识点编辑用弹窗而不是就地编辑：P1.1 的就地编辑在 blur 时触发保存，容易吞掉紧接着的点击（当时的已知问题），
   详情页改用显式弹窗 + 显式保存，交互更可预期。
+
+## 11. P1.4 教学状态机（实现摘要）
+
+- `services/teaching_state.py` 维护 `teaching_progress`（当前阶段、阶段状态、修订号、问题、尝试/提示次数、
+  掌握状态、验证结果）；`teaching_operations` 记录每次模型调用与幂等 `request_id`；`teaching_events` 记录阶段迁移；
+  `teaching_evaluations` 保存每次结构化评价。
+- 阶段：TEACH → DEMO → CHECK → PAIR（两个小步）→ VERIFY → NEXT；CHECK 错误回 TEACH，VERIFY 失败回 PAIR。
+- 模型必须返回结构化 JSON；后端校验阶段、评价枚举与可引用证据，泛化回答「我懂了」会被降级为 `UNCLEAR`。
+- 一次最多一个待答问题：`stage_status=WAITING_USER` 时只允许 `ANSWER`；问题由后端保存，前端不能自造。
+- 停止、失败、进程重启会归一化 `ACTIVE` 状态并展示安全错误；评价与阶段推进在同一事务提交，失败不留下“已完成”评价。
+- P1.5 在此基础上增加活动、掌握历史、错题与断点，不复制教学状态。
+
+## 12. P1.5 学习档案链路
+
+```
+ClassroomView
+  ├─ POST /learning/activities/start ─┐
+  ├─ 每 30s heartbeat（可见 + 5min 内有操作）
+  ├─ GET/PUT /learning/sessions/:id/breakpoint（草稿 + clientSeq）
+  └─ finish / pagehide keepalive
+        │
+        ▼
+services/learning_record.py  学习活动、有效时长、空闲关闭
+services/breakpoints.py      教学状态同步 + 草稿冲突控制
+services/mastery.py          6 态掌握推导 + mastery_history
+services/mistakes.py         真实错误归并 + 每次发生明细
+services/archive.py          总览、课程进度、历史、报告
+        │
+        ▼
+SQLite: learning_activities / learning_breakpoints / mastery_history /
+        mistake_records / mistake_occurrences / learning_events
+```
+
+### 12.1 状态来源与职责边界
+
+- **教学事实**仍以 `teaching_progress` / `teaching_events` / `teaching_evaluations` 为准；
+- `learning_record` 只汇总时长与活动快照，不判断教学对错；
+- `mastery` 只读取教学阶段与评价结果，状态变化写历史；AI 文本不能直接写掌握状态；
+- `mistakes` 只在 CHECK/PAIR 错误与 VERIFY 失败时写入，按 `dedupe_key` 归并；
+- `breakpoints` 的阶段/问题/尝试由后端同步，前端只写草稿与输入模式，并用 `client_seq` 防止旧请求覆盖新数据；
+- `archive` 只读聚合，不修改学习事实。
+
+### 12.2 前端
+
+- 教室进入即开始活动；每 30 秒心跳，页面隐藏立即上报，空闲 5 分钟停止累计；
+- 草稿 900ms 防抖保存；阶段变化后立即保存；`pagehide` / `beforeunload` 用 keepalive 再保存一次；
+- 恢复顺序：打开会话 → 并行读取教学状态/断点/开始活动 → 渲染历史消息 → 恢复阶段与草稿 → 仅在 `PENDING` 时自动开始下一阶段；
+- 恢复提示区分「阶段恢复」「问题仍在等待回答」「未提交草稿已恢复」；不重复提问、不重复验证；
+- `/learning` 学习档案页与 `/learning/mistakes` 错题页沿用深色主题，数据来自上述接口；概览页增加「继续学习」入口。
+
+### 12.3 并发与一致性
+
+- `learning_activities` 使用部分唯一索引保证同会话最多一条 `active`；
+- 断点首次创建使用 SQLite savepoint 处理「教学状态与断点同时初始化」的并发；
+- 活动时长只接受心跳增量，服务端同时按心跳间隔和 120 秒上限裁剪；
+- 后端启动时关闭空闲活动，避免重启后把离线时间计入；
+- 删除课程级联清理活动、错题与断点；掌握历史保留到知识点维度。
+
+完整数据口径见 `docs/LEARNING_RECORDS.md`，接口见 `docs/P15_DELIVERY_REPORT.md`。

@@ -4,13 +4,16 @@ P0：model_configs / app_settings。
 P1.1：courses / chapters / knowledge_points。
 P1.2：课程与知识点补 icon、last_studied_at 等字段（见 db/__init__._ensure_columns 的增量迁移）。
 P1.3：learning_sessions / chat_messages（AI 学习教室的会话与消息）。
+P1.4：teaching_progress / teaching_operations / teaching_events / teaching_evaluations。
+P1.5：learning_activities / mastery_history / mistake_records / mistake_occurrences /
+      learning_breakpoints / learning_events，知识点补 mastery_state（增量加列）。
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -151,6 +154,11 @@ class KnowledgePoint(Base):
     learning_status: Mapped[str] = mapped_column(String(16), nullable=False, default="not_started")
     completion_source: Mapped[str | None] = mapped_column(String(24), nullable=True)
     last_studied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # P1.5 掌握状态：NOT_STARTED / INTRODUCED / UNDERSTANDING / GUIDED_PRACTICE /
+    # INDEPENDENT / NEEDS_REVIEW（见 services/mastery.py），只由教学证据更新。
+    mastery_state: Mapped[str] = mapped_column(String(24), nullable=False, default="NOT_STARTED")
+    mastery_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -303,3 +311,209 @@ class TeachingEvaluation(Base):
     payload: Mapped[str] = mapped_column(Text, nullable=False)
     hint_count: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class LearningActivity(Base):
+    """一次可统计的学习活动（P1.5）。
+
+    有效时长只来自客户端心跳累计的 active_seconds，而不是「页面打开到关闭」的墙钟时间。
+    每个会话同时只允许一条 active 记录（SQLite 部分唯一索引兜底），
+    空闲超时后由服务层关闭为 interrupted，下一次进入重新开始。
+    """
+
+    __tablename__ = "learning_activities"
+    __table_args__ = (
+        Index(
+            "uq_learning_activities_active_session",
+            "session_id",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    course_id: Mapped[int] = mapped_column(ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    knowledge_point_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_points.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("learning_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
+    result: Mapped[str] = mapped_column(String(24), nullable=False, default="in_progress")
+    end_reason: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    last_heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    active_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    heartbeat_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    final_stage: Mapped[str] = mapped_column(String(16), nullable=False, default="TEACH")
+    completed_stages: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    check_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pair_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    verify_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    hint_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    verify_hint_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
+    )
+
+
+class MasteryHistory(Base):
+    """知识点掌握状态的变化历史（P1.5），只由教学证据写入。"""
+
+    __tablename__ = "mastery_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    course_id: Mapped[int] = mapped_column(ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    knowledge_point_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_points.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[int | None] = mapped_column(
+        ForeignKey("learning_sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    activity_id: Mapped[int | None] = mapped_column(
+        ForeignKey("learning_activities.id", ondelete="SET NULL"), nullable=True
+    )
+    from_state: Mapped[str] = mapped_column(String(24), nullable=False)
+    to_state: Mapped[str] = mapped_column(String(24), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    evidence: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, index=True)
+
+
+class MistakeRecord(Base):
+    """错题 / 薄弱点（P1.5）。同一知识点重复出现的相同错误归并到一条记录。"""
+
+    __tablename__ = "mistake_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    course_id: Mapped[int] = mapped_column(ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    knowledge_point_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_points.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("learning_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    activity_id: Mapped[int | None] = mapped_column(
+        ForeignKey("learning_activities.id", ondelete="SET NULL"), nullable=True
+    )
+
+    stage: Mapped[str] = mapped_column(String(16), nullable=False)
+    error_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+    question: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    user_answer: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    correct_answer: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    error_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    correction: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    misconceptions: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open", index=True)
+    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
+    )
+
+
+class MistakeOccurrence(Base):
+    """错题每次发生的历史明细，归并后仍可逐次追溯。"""
+
+    __tablename__ = "mistake_occurrences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mistake_id: Mapped[int] = mapped_column(
+        ForeignKey("mistake_records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    activity_id: Mapped[int | None] = mapped_column(
+        ForeignKey("learning_activities.id", ondelete="SET NULL"), nullable=True
+    )
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("learning_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    stage: Mapped[str] = mapped_column(String(16), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(24), nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    user_answer: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    feedback: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class LearningBreakpoint(Base):
+    """断点续学快照（P1.5）。每个学习会话一条，与 teaching_progress 互为补充。"""
+
+    __tablename__ = "learning_breakpoints"
+
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("learning_sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    course_id: Mapped[int] = mapped_column(ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    knowledge_point_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_points.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    activity_id: Mapped[int | None] = mapped_column(
+        ForeignKey("learning_activities.id", ondelete="SET NULL"), nullable=True
+    )
+
+    current_stage: Mapped[str] = mapped_column(String(16), nullable=False, default="TEACH")
+    stage_status: Mapped[str] = mapped_column(String(24), nullable=False, default="PENDING")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    input_mode: Mapped[str] = mapped_column(String(8), nullable=False, default="ASK")
+    draft_answer: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    current_question: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    completed_stages: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+
+    pair_step: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    check_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pair_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    verify_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    hint_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    verify_hint_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    last_message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True
+    )
+    last_assistant_message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True
+    )
+    last_assistant_excerpt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    client_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
+    )
+
+
+class LearningEvent(Base):
+    """学习活动层面的关键事件；阶段迁移与评价仍以 teaching_events / teaching_evaluations 为准。"""
+
+    __tablename__ = "learning_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    activity_id: Mapped[int | None] = mapped_column(
+        ForeignKey("learning_activities.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    course_id: Mapped[int] = mapped_column(ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    knowledge_point_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_points.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[int | None] = mapped_column(
+        ForeignKey("learning_sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, index=True)

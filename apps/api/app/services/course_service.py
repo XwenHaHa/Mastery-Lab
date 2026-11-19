@@ -43,7 +43,7 @@ from ..schemas.course import (
     ReorderRequest,
     StatusCounts,
 )
-from . import learning
+from . import learning, mastery
 from .materials import SavedMaterial, delete_material_files
 from .md_parser import ParsedMaterial, _summarize
 
@@ -140,6 +140,8 @@ def _point_out(point: KnowledgePoint) -> KnowledgePointOut:
         code_count=point.code_count,
         mastery_level=point.mastery_level,
         learning_status=learning.safe_status(point.learning_status),
+        mastery_state=mastery.safe_state(point.mastery_state),
+        mastery_label=mastery.label(point.mastery_state),
         completion_source=point.completion_source,
         last_studied_at=_utc(point.last_studied_at),
     )
@@ -452,6 +454,8 @@ def list_points(
                     code_count=point.code_count,
                     content_length=len(point.content or ""),
                     learning_status=current,
+                    mastery_state=mastery.safe_state(point.mastery_state),
+                    mastery_label=mastery.label(point.mastery_state),
                     completion_source=point.completion_source,
                     last_studied_at=point.last_studied_at,
                 )
@@ -483,6 +487,8 @@ def point_detail(session: Session, point_id: int, *, course_id: int | None = Non
         sort_order=point.sort_order,
         code_count=point.code_count,
         learning_status=learning.safe_status(point.learning_status),
+        mastery_state=mastery.safe_state(point.mastery_state),
+        mastery_label=mastery.label(point.mastery_state),
         last_studied_at=_utc(point.last_studied_at),
         previous_id=previous_id,
         next_id=next_id,
@@ -630,6 +636,8 @@ def course_progress(session: Session, course_id: int) -> CourseProgress:
             chapter_id=point.chapter_id,
             chapter_title=point.chapter.title,
             learning_status=learning.safe_status(point.learning_status),
+            mastery_state=mastery.safe_state(point.mastery_state),
+            mastery_label=mastery.label(point.mastery_state),
             last_studied_at=_utc(point.last_studied_at) or _utcnow(),
         )
         for point in studied

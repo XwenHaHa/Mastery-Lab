@@ -1,19 +1,70 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowRight, Refresh } from '@element-plus/icons-vue'
+import { ArrowRight, Notebook, Refresh } from '@element-plus/icons-vue'
 
+import { learningApi } from '@/api'
+import type { ArchiveOverview, ResumeInfo } from '@/api/types'
 import { useModelStore } from '@/stores/models'
 import { useSystemStore } from '@/stores/system'
 
 const system = useSystemStore()
 const models = useModelStore()
 const router = useRouter()
+const learningOverview = ref<ArchiveOverview | null>(null)
+const resume = ref<ResumeInfo | null>(null)
 
 onMounted(() => {
   void models.load()
   if (!system.health) void system.refresh()
+  void learningApi.overview().then((data) => (learningOverview.value = data)).catch(() => undefined)
+  void learningApi.resume().then((data) => (resume.value = data)).catch(() => undefined)
 })
+
+function formatDuration(seconds: number): string {
+  const value = Math.max(0, Math.round(seconds || 0))
+  const hours = Math.floor(value / 3600)
+  const minutes = Math.floor((value % 3600) / 60)
+  if (hours) return `${hours} 小时 ${minutes} 分`
+  if (minutes) return `${minutes} 分钟`
+  return `${value} 秒`
+}
+
+const learningStats = computed(() => {
+  const data = learningOverview.value
+  if (!data) return []
+  return [
+    { label: '累计有效学习', value: formatDuration(data.effectiveSeconds), note: `${data.activityCount} 次学习活动` },
+    { label: '已完成知识点', value: String(data.completedPoints), note: `共 ${data.totalPoints} 个` },
+    { label: '待复习', value: String(data.needsReviewPoints), note: '来自验证失败或反复出错' },
+    { label: '本周学习', value: formatDuration(data.week.effectiveSeconds), note: `完成 ${data.week.completedPoints} 个知识点` },
+  ]
+})
+
+const stageText: Record<string, string> = {
+  TEACH: '讲解',
+  DEMO: '演示',
+  CHECK: '理解检查',
+  PAIR: '陪练',
+  VERIFY: '独立验证',
+  NEXT: '已完成',
+}
+
+function stageLabel(stage: string): string {
+  return stageText[stage] ?? stage
+}
+
+function goResume(): void {
+  if (!resume.value) {
+    void router.push({ name: 'learning' })
+    return
+  }
+  void router.push({
+    name: 'classroom',
+    params: { id: resume.value.courseId },
+    query: { point: String(resume.value.knowledgePointId), resume: '1' },
+  })
+}
 
 const stats = computed(() => [
   { label: '模型配置', value: String(models.count), note: models.count ? '已保存到本机数据库' : '尚未添加' },
@@ -29,8 +80,9 @@ const workflow = [
   { step: '01', title: '导入教材', desc: 'Markdown / PDF 教材进入本地库，原文不改写', stage: 'P1.1 · 已完成' },
   { step: '02', title: '拆解知识点', desc: '按章节生成学习目录，可自行维护与标记学习状态', stage: 'P1.2 · 已完成' },
   { step: '03', title: '讲解与演示', desc: '老师先讲清概念，再给出最小可运行案例', stage: 'P1.3 · 已完成' },
-  { step: '04', title: '陪写与运行', desc: '内置编辑器逐小步推进，运行结果回传', stage: 'P2' },
-  { step: '05', title: '掌握验证', desc: '独立实现与迁移任务通过后才算掌握', stage: 'P2' },
+  { step: '04', title: '教学陪练', desc: '两个小步带着用户完成，提示逐步减少', stage: 'P1.4 · 已完成' },
+  { step: '05', title: '掌握验证与档案', desc: '独立验证通过后更新掌握状态、错题与学习档案', stage: 'P1.5 · 已完成' },
+  { step: '06', title: '代码编辑与运行', desc: '内置编辑器、终端与隔离执行沙箱', stage: 'P2' },
 ]
 
 const milestones = computed(() => [
@@ -42,6 +94,8 @@ const milestones = computed(() => [
   { title: '教材导入与解析', detail: 'Markdown / PDF 解析、结构预览、课程创建（P1.1）', done: true },
   { title: '课程与知识点管理', detail: '目录维护、学习状态、加权进度（P1.2）', done: true },
   { title: 'AI 教学对话', detail: '主动讲解、真实流式输出、会话恢复（P1.3）', done: true },
+  { title: '教学状态机', detail: '讲解 → 演示 → 检查 → 陪练 → 独立验证（P1.4）', done: true },
+  { title: '学习档案与断点续学', detail: '有效时长、掌握档案、错题本与断点恢复（P1.5）', done: true },
 ])
 
 const environment = computed(() => [
@@ -60,8 +114,8 @@ const environment = computed(() => [
       <div>
         <h2 class="ml-page-title">概览</h2>
         <p class="ml-page-desc">
-          本机运行的技术学习工作台。教材导入（P1.1）、课程管理（P1.2）与 AI 学习教室（P1.3）
-          已经可用，内置代码编辑与运行会在 P2 开放。
+          本机运行的技术学习工作台。教材导入、课程管理、AI 学习教室、教学状态机与学习档案
+          已经可用；内置代码编辑、终端与运行沙箱会在 P2 开放。
         </p>
       </div>
       <div class="head-actions">
@@ -80,6 +134,37 @@ const environment = computed(() => [
         <p class="stat-note">{{ item.note }}</p>
       </div>
     </div>
+
+    <section class="ml-section">
+      <div class="ml-section-head">
+        <h3 class="ml-section-title">继续学习</h3>
+        <button type="button" class="link-button" @click="router.push({ name: 'learning' })">
+          查看学习档案
+        </button>
+      </div>
+      <div v-if="resume" class="resume-card">
+        <div class="resume-copy">
+          <span class="resume-kicker">上次停在这里</span>
+          <strong>{{ resume.courseTitle }} · {{ resume.knowledgePointTitle }}</strong>
+          <span class="resume-note">
+            {{ resume.chapterTitle || '未分章' }} · {{ stageLabel(resume.currentStage) }}
+            <template v-if="resume.hasDraft"> · 有未提交草稿</template>
+          </span>
+        </div>
+        <el-button type="primary" :icon="ArrowRight" @click="goResume">回到教室</el-button>
+      </div>
+      <div v-if="learningStats.length" class="learning-strip">
+        <div v-for="item in learningStats" :key="item.label" class="learning-cell">
+          <p class="stat-label">{{ item.label }}</p>
+          <p class="stat-value">{{ item.value }}</p>
+          <p class="stat-note">{{ item.note }}</p>
+        </div>
+      </div>
+      <div v-else class="learning-empty">
+        <span class="ml-muted">还没有学习记录。导入课程并进入学习教室后，这里会显示真实的时长与掌握情况。</span>
+        <el-button size="small" :icon="Notebook" @click="router.push({ name: 'courses' })">去课程中心</el-button>
+      </div>
+    </section>
 
     <section class="ml-section">
       <div class="ml-section-head">
@@ -138,13 +223,81 @@ const environment = computed(() => [
   flex-shrink: 0;
 }
 
-.stats {
+.stats,
+.learning-strip {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   border: 1px solid var(--ml-border);
   border-radius: var(--ml-radius-lg);
   background: var(--ml-bg-soft);
   overflow: hidden;
+}
+
+.learning-strip {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.learning-cell {
+  padding: 14px 18px;
+  border-left: 1px solid var(--ml-border);
+  min-width: 0;
+}
+
+.learning-cell:first-child {
+  border-left: none;
+}
+
+.resume-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  border: 1px solid color-mix(in srgb, var(--ml-accent) 30%, transparent);
+  border-radius: var(--ml-radius-lg);
+  background: color-mix(in srgb, var(--ml-accent) 7%, transparent);
+}
+
+.resume-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.resume-kicker {
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ml-text-3);
+}
+
+.resume-copy strong {
+  font-size: 13.5px;
+}
+
+.resume-note {
+  font-size: 12px;
+  color: var(--ml-text-3);
+}
+
+.learning-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 0 4px;
+  font-size: 12.5px;
+}
+
+.link-button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ml-accent);
+  font: inherit;
+  cursor: pointer;
 }
 
 .stat {

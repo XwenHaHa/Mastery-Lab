@@ -47,6 +47,8 @@ class KnowledgePointOut(CamelModel):
     code_count: int
     mastery_level: int
     learning_status: str
+    mastery_state: str = "NOT_STARTED"
+    mastery_label: str = "未接触"
     completion_source: str | None = None
     last_studied_at: datetime | None = None
 
@@ -63,6 +65,8 @@ class KnowledgePointSummary(CamelModel):
     code_count: int
     content_length: int
     learning_status: str
+    mastery_state: str = "NOT_STARTED"
+    mastery_label: str = "未接触"
     completion_source: str | None = None
     last_studied_at: datetime | None = None
 
@@ -81,6 +85,8 @@ class KnowledgePointDetail(CamelModel):
     sort_order: int
     code_count: int
     learning_status: str
+    mastery_state: str = "NOT_STARTED"
+    mastery_label: str = "未接触"
     completion_source: str | None = None
     last_studied_at: datetime | None = None
     previous_id: int | None = None
@@ -236,6 +242,8 @@ class RecentStudy(CamelModel):
     chapter_id: int
     chapter_title: str
     learning_status: str
+    mastery_state: str = "NOT_STARTED"
+    mastery_label: str = "未接触"
     last_studied_at: datetime
 
 

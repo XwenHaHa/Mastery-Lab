@@ -19,6 +19,18 @@ import type {
   ModelTestResult,
   SessionOpenPayload,
   StopStreamResult,
+  ArchiveOverview,
+  BreakpointState,
+  CourseLearningProgress,
+  LearningActivityState,
+  LearningHistoryDetail,
+  LearningHistoryPage,
+  LearningReport,
+  MasteryOverview,
+  MistakeDetail,
+  MistakePage,
+  MistakeRecord,
+  ResumeInfo,
 } from './types'
 
 export const systemApi = {
@@ -204,4 +216,90 @@ export const classroomApi = {
   session: (sessionId: number) => request<ClassroomSession>(`/classroom/sessions/${sessionId}`),
   stop: (sessionId: number) =>
     request<StopStreamResult>(`/classroom/sessions/${sessionId}/stop`, { method: 'POST' }),
+}
+
+function queryString(params: Record<string, string | number | undefined | null>): string {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== '') search.set(key, String(value))
+  }
+  const query = search.toString()
+  return query ? `?${query}` : ''
+}
+
+/** 学习档案、学习历史、错题与断点续学（P1.5） */
+export const learningApi = {
+  startActivity: (payload: { courseId: number; knowledgePointId: number; sessionId?: number }) =>
+    request<LearningActivityState>('/learning/activities/start', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  heartbeat: (activityId: number, activeSecondsDelta: number) =>
+    request<LearningActivityState>(`/learning/activities/${activityId}/heartbeat`, {
+      method: 'POST',
+      body: JSON.stringify({ activeSecondsDelta }),
+    }),
+  finishActivity: (
+    activityId: number,
+    payload: { result?: 'finished' | 'completed' | 'interrupted'; reason?: string } = {},
+  ) =>
+    request<LearningActivityState>(`/learning/activities/${activityId}/finish`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  resume: () => request<ResumeInfo | null>('/learning/resume'),
+  breakpoint: (sessionId: number) =>
+    request<BreakpointState>(`/learning/sessions/${sessionId}/breakpoint`),
+  saveBreakpoint: (
+    sessionId: number,
+    payload: { clientSeq: number; draftAnswer: string; inputMode: 'ASK' | 'ANSWER' },
+  ) =>
+    request<BreakpointState>(`/learning/sessions/${sessionId}/breakpoint`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  overview: () => request<ArchiveOverview>('/learning/overview'),
+  courses: () => request<CourseLearningProgress[]>('/learning/courses'),
+  mastery: (params: { courseId?: number; chapterId?: number } = {}) =>
+    request<MasteryOverview>(
+      `/learning/mastery${queryString({ courseId: params.courseId, chapterId: params.chapterId })}`,
+    ),
+  history: (
+    params: {
+      courseId?: number
+      pointId?: number
+      from?: string
+      to?: string
+      limit?: number
+      offset?: number
+    } = {},
+  ) => request<LearningHistoryPage>(`/learning/history${queryString(params)}`),
+  historyDetail: (activityId: number) =>
+    request<LearningHistoryDetail>(`/learning/history/${activityId}`),
+  report: (courseId?: number) =>
+    request<LearningReport>(`/learning/report${queryString({ courseId })}`),
+
+  mistakes: (
+    params: {
+      courseId?: number
+      pointId?: number
+      errorType?: string
+      status?: string
+      limit?: number
+      offset?: number
+    } = {},
+  ) => request<MistakePage>(`/learning/mistakes${queryString(params)}`),
+  mistake: (mistakeId: number) => request<MistakeDetail>(`/learning/mistakes/${mistakeId}`),
+  updateMistake: (mistakeId: number, status: 'open' | 'understood') =>
+    request<MistakeRecord>(`/learning/mistakes/${mistakeId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    }),
+  practiceMistake: (mistakeId: number) =>
+    request<{ courseId: number; knowledgePointId: number; sessionId: number; route: string }>(
+      `/learning/mistakes/${mistakeId}/practice`,
+      { method: 'POST' },
+    ),
 }

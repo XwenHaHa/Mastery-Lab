@@ -425,6 +425,10 @@ function enterClassroom(): void {
     query: selectedPointId.value ? { point: String(selectedPointId.value) } : {},
   })
 }
+
+function masteryClass(state: string): string {
+  return `is-${state.toLowerCase().replace(/_/g, '-')}`
+}
 </script>
 
 <template>
@@ -465,7 +469,9 @@ function enterClassroom(): void {
             <p v-if="course.description" class="head-desc">{{ course.description }}</p>
           </div>
           <div class="head-actions">
-            <el-button type="primary" :icon="ArrowRight" @click="enterClassroom">开始学习</el-button>
+            <el-button type="primary" :icon="ArrowRight" @click="enterClassroom">
+              {{ course.progress ? '继续学习' : '开始学习' }}
+            </el-button>
             <el-button :icon="Edit" @click="openCourseEdit">编辑课程</el-button>
             <el-button :icon="Delete" @click="removeCourse">删除</el-button>
           </div>
@@ -570,6 +576,11 @@ function enterClassroom(): void {
                 <button type="button" class="point-main" @click="selectPoint(point.id)">
                   <span class="point-dot" :class="`is-${point.learningStatus.replace('_', '-')}`" />
                   <span class="point-title">{{ point.title }}</span>
+                  <span
+                    v-if="point.masteryState !== 'NOT_STARTED'"
+                    class="point-mastery"
+                    :class="masteryClass(point.masteryState)"
+                  >{{ point.masteryLabel }}</span>
                   <span class="point-status">{{ statusLabel(point.learningStatus) }}</span>
                 </button>
                 <div class="row-tools">
@@ -1171,6 +1182,22 @@ function enterClassroom(): void {
   color: var(--ml-text);
   font-weight: 550;
 }
+
+.point-mastery {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--ml-border);
+  font-size: 10.5px;
+  color: var(--ml-text-3);
+  white-space: nowrap;
+}
+
+.point-mastery.is-introduced { color: #8b9cc4; }
+.point-mastery.is-understanding { color: var(--ml-accent); border-color: color-mix(in srgb, var(--ml-accent) 36%, transparent); }
+.point-mastery.is-guided-practice { color: #d39a4e; }
+.point-mastery.is-independent { color: var(--ml-success); border-color: color-mix(in srgb, var(--ml-success) 36%, transparent); }
+.point-mastery.is-needs-review { color: var(--ml-warning); border-color: color-mix(in srgb, var(--ml-warning) 36%, transparent); }
 
 .point-status {
   flex-shrink: 0;

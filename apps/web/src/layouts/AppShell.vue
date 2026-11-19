@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
-import { Cpu, DataBoard, Link as LinkIcon, Moon, Reading, Setting, Sunny } from '@element-plus/icons-vue'
+import { Cpu, DataBoard, Link as LinkIcon, Moon, Notebook, Reading, Setting, Sunny } from '@element-plus/icons-vue'
 
 import { useSystemStore } from '@/stores/system'
 import { useThemeStore } from '@/stores/theme'
@@ -16,6 +16,7 @@ const navGroups = [
     items: [
       { name: 'dashboard', label: '概览', icon: DataBoard, to: { name: 'dashboard' } },
       { name: 'courses', label: '课程中心', icon: Reading, to: { name: 'courses' } },
+      { name: 'learning', label: '学习档案', icon: Notebook, to: { name: 'learning' } },
     ],
   },
   {
@@ -32,6 +33,7 @@ const pageTitle = computed(() => (typeof route.meta.title === 'string' ? route.m
 const activeName = computed(() => {
   const name = String(route.name ?? '')
   if (name.startsWith('course')) return 'courses'
+  if (name.startsWith('learning') || name === 'mistakes') return 'learning'
   return name
 })
 const version = computed(() => system.health?.version ?? '0.1.0')

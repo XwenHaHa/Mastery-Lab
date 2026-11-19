@@ -22,6 +22,18 @@ const router = createRouter({
           meta: { title: '课程中心' },
         },
         {
+          path: 'learning',
+          name: 'learning',
+          component: () => import('@/views/LearningView.vue'),
+          meta: { title: '学习档案' },
+        },
+        {
+          path: 'learning/mistakes',
+          name: 'mistakes',
+          component: () => import('@/views/MistakesView.vue'),
+          meta: { title: '错题与薄弱点' },
+        },
+        {
           path: 'courses/import',
           name: 'course-import',
           component: () => import('@/views/CourseImportView.vue'),

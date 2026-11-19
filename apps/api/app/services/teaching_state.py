@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from ..core.response import ConflictError, ValidationError
 from ..db.models import ChatMessage, LearningSession, TeachingEvaluation, TeachingEvent, TeachingOperation, TeachingProgress
 from ..schemas.teaching import TeachingAction, TeachingJudgment, TeachingTask
-from . import classroom_service, stream_registry
+from . import breakpoints, classroom_service, learning_record, mastery, mistakes, stream_registry
 
 STAGES = ("TEACH", "DEMO", "CHECK", "PAIR", "VERIFY", "NEXT")
 GOALS = {
@@ -49,7 +49,18 @@ class TeachingStateMachine:
             except IntegrityError:
                 self.db.rollback()
                 progress = self.db.get(TeachingProgress, session_id)
+        try:
+            breakpoints.sync_from_progress(self.db, session_id, progress)
+            self.db.commit()
+        except Exception:  # noqa: BLE001 - 断点只是辅助，不能阻断教学初始化
+            self.db.rollback()
+            progress = self.db.get(TeachingProgress, session_id)
         return progress
+
+    def _sync_side_records(self, progress: TeachingProgress) -> None:
+        """把阶段、计数同步到学习活动和断点（不单独提交）。"""
+        learning_record.sync_from_progress(self.db, progress.session_id, progress)
+        breakpoints.sync_from_progress(self.db, progress.session_id, progress)
 
     def event(self, progress, event_type, detail="", operation=None, from_stage=None):
         self.db.add(TeachingEvent(session_id=progress.session_id, operation_id=operation.id if operation else None,
@@ -151,6 +162,7 @@ class TeachingStateMachine:
 
     def begin(self, session_id: int, payload: TeachingAction, model_name: str):
         progress = self.ensure(session_id)
+        learning_record.ensure_activity(self.db, session_id)
         if payload.action not in self.allowed(progress):
             raise ConflictError("当前阶段不允许此操作，请先完成当前教学步骤")
         if payload.action in ("ANSWER", "ASK") and not payload.content:
@@ -197,6 +209,7 @@ class TeachingStateMachine:
         progress.stage_status = "ACTIVE"
         progress.error_message = ""
         self.event(progress, "ACTION_STARTED", action, operation)
+        self._sync_side_records(progress)
         self.db.commit()
         return operation
 
@@ -226,6 +239,7 @@ class TeachingStateMachine:
         operation.status = "completed"
         operation.ended_at = now()
         self.event(progress, "ACTION_COMPLETED", operation.action, operation)
+        self._sync_side_records(progress)
         self.db.commit()
         return self.view(progress)
 
@@ -239,53 +253,90 @@ class TeachingStateMachine:
             if generic or not result.evidence_quote.strip() or result.evidence_quote not in user.content:
                 result = result.model_copy(update={"evaluation": "UNCLEAR", "feedback": "仅确认理解不足以通过。请针对当前问题给出具体解释或代码片段。", "reason": "缺少可引用的实际回答证据", "suggested_action": "ASK_CLARIFICATION"})
                 self.db.get(ChatMessage, operation.assistant_message_id).content = result.feedback
-        self.db.add(TeachingEvaluation(operation_id=operation.id, session_id=operation.session_id, stage=operation.stage,
-            verdict=result.evaluation, payload=result.model_dump_json(), hint_count=progress.verify_hint_count if operation.stage == "VERIFY" else progress.hint_count))
+        row = classroom_service.get_session_row(self.db, progress.session_id)
+        course, _chapter, point = classroom_service.load_entities_for_row(self.db, row)
+        activity = learning_record.active_activity(self.db, progress.session_id)
+
         operation.result_json = result.model_dump_json()
         progress.stage_status = "WAITING_USER"
-        if result.evaluation == "UNCLEAR":
-            return
-        if operation.stage == "CHECK":
-            if result.evaluation == "CORRECT":
-                self.complete_stage(progress, operation)
-                progress.mastery_state = "UNDERSTANDING"
-                self.move(progress, "PAIR", operation, result.reason)
-            elif result.evaluation == "INCORRECT":
-                self.move(progress, "TEACH", operation, result.reason)
-            elif result.evaluation == "PARTIAL":
-                progress.current_question = ""
-                progress.rubric = ""
-                progress.hint = ""
-                progress.question_message_id = None
-                progress.stage_status = "PENDING"
-                self.event(progress, "TARGETED_RECHECK", result.reason, operation)
-        elif operation.stage == "PAIR" and result.evaluation == "CORRECT":
-            progress.mastery_state = "GUIDED_PRACTICE"
-            if progress.pair_step < 2:
-                progress.pair_step += 1
-                progress.current_question = ""
-                progress.question_message_id = None
-                progress.stage_status = "PENDING"
-            else:
-                self.complete_stage(progress, operation)
-                self.move(progress, "VERIFY", operation, result.reason)
-        elif operation.stage == "VERIFY":
-            progress.verification_result = result.evaluation
-            if result.evaluation == "PASSED":
-                self.complete_stage(progress, operation)
-                self.move(progress, "NEXT", operation, result.reason)
-                progress.stage_status = "COMPLETED"
-                progress.completed_at = now()
-                progress.mastery_state = "GUIDED_PRACTICE" if progress.verify_hint_count else "INDEPENDENT"
-                progress.summary = result.summary or result.feedback
-                row = classroom_service.get_session_row(self.db, progress.session_id)
-                course, _chapter, point = classroom_service.load_entities_for_row(self.db, row)
-                point.learning_status = "completed"
-                point.completion_source = "verified"
-                point.last_studied_at = now()
-                course.last_studied_at = now()
-            else:
-                self.move(progress, "PAIR", operation, result.reason)
+
+        mistakes.record_mistake(
+            self.db,
+            operation=operation,
+            progress=progress,
+            point=point,
+            stage=operation.stage,
+            verdict=result.evaluation,
+            reason=result.reason,
+            feedback=result.feedback,
+            misconceptions=list(result.misconceptions),
+        )
+        # 评价行最后再登记：若最终提交失败，事件流会把整个事务回滚，不会留下成功评价。
+        self.db.add(TeachingEvaluation(operation_id=operation.id, session_id=operation.session_id, stage=operation.stage,
+            verdict=result.evaluation, payload=result.model_dump_json(), hint_count=progress.verify_hint_count if operation.stage == "VERIFY" else progress.hint_count))
+
+        if result.evaluation != "UNCLEAR":
+            if operation.stage == "CHECK":
+                if result.evaluation == "CORRECT":
+                    self.complete_stage(progress, operation)
+                    progress.mastery_state = "UNDERSTANDING"
+                    self.move(progress, "PAIR", operation, result.reason)
+                elif result.evaluation == "INCORRECT":
+                    self.move(progress, "TEACH", operation, result.reason)
+                elif result.evaluation == "PARTIAL":
+                    progress.current_question = ""
+                    progress.rubric = ""
+                    progress.hint = ""
+                    progress.question_message_id = None
+                    progress.stage_status = "PENDING"
+                    self.event(progress, "TARGETED_RECHECK", result.reason, operation)
+            elif operation.stage == "PAIR" and result.evaluation == "CORRECT":
+                progress.mastery_state = "GUIDED_PRACTICE"
+                if progress.pair_step < 2:
+                    progress.pair_step += 1
+                    progress.current_question = ""
+                    progress.question_message_id = None
+                    progress.stage_status = "PENDING"
+                else:
+                    self.complete_stage(progress, operation)
+                    self.move(progress, "VERIFY", operation, result.reason)
+            elif operation.stage == "VERIFY":
+                progress.verification_result = result.evaluation
+                if result.evaluation == "PASSED":
+                    self.complete_stage(progress, operation)
+                    self.move(progress, "NEXT", operation, result.reason)
+                    progress.stage_status = "COMPLETED"
+                    progress.completed_at = now()
+                    progress.mastery_state = "GUIDED_PRACTICE" if progress.verify_hint_count else "INDEPENDENT"
+                    progress.summary = result.summary or result.feedback
+                    point.learning_status = "completed"
+                    point.completion_source = "verified"
+                    point.last_studied_at = now()
+                    course.last_studied_at = now()
+                else:
+                    self.move(progress, "PAIR", operation, result.reason)
+                    progress.mastery_state = "NEEDS_REVIEW"
+
+        # 之前已进入待复习的知识点，错误回答不会把状态“洗白”；正确回答仍可逐步恢复。
+        if point.mastery_state == mastery.NEEDS_REVIEW and result.evaluation in (
+            "INCORRECT", "PARTIAL", "UNCLEAR", "FAILED", "NEEDS_REVIEW",
+        ):
+            progress.mastery_state = mastery.NEEDS_REVIEW
+
+        mastery.apply(
+            self.db,
+            point=point,
+            progress=progress,
+            course=course,
+            stage=operation.stage,
+            verdict=result.evaluation,
+            action=operation.action,
+            reason=result.reason,
+            evidence={"activityId": activity.id if activity else None, "operationId": operation.id},
+        )
+        if operation.stage == "VERIFY" and result.evaluation == "PASSED":
+            learning_record.complete_for_session(self.db, progress.session_id, reason="verified")
+        self._sync_side_records(progress)
 
     def fail(self, operation_id, error, content="", interrupted=False):
         self.db.rollback()
@@ -308,6 +359,10 @@ class TeachingStateMachine:
             progress.error_message = error[:500]
             progress.last_activity_at = now()
             self.event(progress, "ACTION_INTERRUPTED" if interrupted else "ACTION_FAILED", error, operation)
+            try:
+                self._sync_side_records(progress)
+            except Exception:  # noqa: BLE001 - 断点写入失败不能覆盖原始错误
+                self.db.rollback()
         self.db.commit()
 
     def control(self, session_id, payload):
@@ -339,6 +394,7 @@ class TeachingStateMachine:
             course, _chapter, point = classroom_service.load_entities_for_row(self.db, row)
             next_id = classroom_service._point_info(course, point).next_id
             course_complete = next_id is None
+            learning_record.complete_for_session(self.db, session_id, reason="next_point")
         elif payload.action == "RESTART":
             progress.round_number += 1
             self.move(progress, "TEACH", operation, "用户明确重新学习，保留原证据")
@@ -351,7 +407,12 @@ class TeachingStateMachine:
             row = classroom_service.get_session_row(self.db, session_id)
             _course, _chapter, point = classroom_service.load_entities_for_row(self.db, row)
             point.learning_status = "in_progress"
+            learning_record.interrupt_for_session(self.db, session_id, "restarted")
+            snapshot = breakpoints.get_or_create(self.db, session_id)
+            snapshot.draft_answer = ""
+            snapshot.input_mode = "ASK"
         self.event(progress, payload.action, "用户操作", operation)
+        self._sync_side_records(progress)
         result = {"teaching": self.view(progress), "nextKnowledgePointId": next_id, "courseComplete": course_complete}
         operation.result_json = json.dumps(result, ensure_ascii=False)
         self.db.commit()

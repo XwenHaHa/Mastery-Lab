@@ -56,6 +56,8 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "knowledge_points": {
         "last_studied_at": "ALTER TABLE knowledge_points ADD COLUMN last_studied_at DATETIME",
         "completion_source": "ALTER TABLE knowledge_points ADD COLUMN completion_source VARCHAR(24)",
+        "mastery_state": "ALTER TABLE knowledge_points ADD COLUMN mastery_state VARCHAR(24) NOT NULL DEFAULT 'NOT_STARTED'",
+        "mastery_updated_at": "ALTER TABLE knowledge_points ADD COLUMN mastery_updated_at DATETIME",
     },
 }
 
@@ -91,6 +93,57 @@ def _migrate_learning_status() -> None:
                 logger.info("增量迁移：learning_status %s → %s（%s 行）", old, new, result.rowcount)
 
 
+def _backfill_mastery() -> None:
+    """把已有教学进度回填为掌握状态（幂等，只填补 NOT_STARTED）。
+
+    - 已有 teaching_progress 的知识点复制其 mastery_state；
+    - 通过 VERIFY 的已完成知识点补为 INDEPENDENT。
+    历史手工完成（legacy_manual）没有教学证据，不推断为已掌握。
+    """
+    with engine.begin() as conn:
+        if not _column_names(conn, "knowledge_points"):
+            return
+        has_progress = bool(_column_names(conn, "teaching_progress"))
+        if has_progress:
+            conn.execute(text("""
+                UPDATE knowledge_points
+                   SET mastery_state = (
+                       SELECT tp.mastery_state
+                         FROM teaching_progress tp
+                         JOIN learning_sessions ls ON ls.id = tp.session_id
+                        WHERE ls.knowledge_point_id = knowledge_points.id
+                        ORDER BY tp.last_activity_at DESC
+                        LIMIT 1
+                   ),
+                   mastery_updated_at = CURRENT_TIMESTAMP
+                 WHERE mastery_state = 'NOT_STARTED'
+                   AND EXISTS (
+                       SELECT 1 FROM teaching_progress tp
+                         JOIN learning_sessions ls ON ls.id = tp.session_id
+                        WHERE ls.knowledge_point_id = knowledge_points.id
+                          AND tp.mastery_state != 'NOT_STARTED'
+                   )
+            """))
+        conn.execute(text("""
+            UPDATE knowledge_points
+               SET mastery_state = 'INDEPENDENT', mastery_updated_at = CURRENT_TIMESTAMP
+             WHERE mastery_state = 'NOT_STARTED'
+               AND learning_status = 'completed'
+               AND completion_source = 'verified'
+        """))
+        if _column_names(conn, "mastery_history"):
+            conn.execute(text("""
+                INSERT INTO mastery_history
+                    (course_id, knowledge_point_id, session_id, activity_id, from_state, to_state, reason, evidence, created_at)
+                SELECT ch.course_id, kp.id, NULL, NULL, 'NOT_STARTED', kp.mastery_state,
+                       '迁移：根据已有教学进度或已验证完成记录回填', '{}', CURRENT_TIMESTAMP
+                  FROM knowledge_points kp
+                  JOIN chapters ch ON ch.id = kp.chapter_id
+                 WHERE kp.mastery_state != 'NOT_STARTED'
+                   AND NOT EXISTS (SELECT 1 FROM mastery_history mh WHERE mh.knowledge_point_id = kp.id)
+            """))
+
+
 def init_db() -> None:
     """建库建表 + 增量迁移（幂等）。仍不引入迁移框架，见 docs/DATABASE.md 第 5 节。"""
     settings.ensure_dirs()
@@ -101,6 +154,7 @@ def init_db() -> None:
     _migrate_learning_status()
     with engine.begin() as conn:
         conn.execute(text("UPDATE knowledge_points SET completion_source='legacy_manual' WHERE learning_status='completed' AND completion_source IS NULL"))
+    _backfill_mastery()
     logger.info("数据库就绪: %s", settings.resolved_database_url)
 
 

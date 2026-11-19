@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -14,15 +14,17 @@ import {
   Warning,
 } from '@element-plus/icons-vue'
 
-import { classroomApi, courseLibraryApi, modelApi } from '@/api'
-import { ApiError } from '@/api/client'
+import { classroomApi, courseLibraryApi, learningApi, modelApi } from '@/api'
+import { ApiError, apiBase } from '@/api/client'
 import { streamClassroom } from '@/api/classroomStream'
 import type {
+  BreakpointState,
   Chapter,
   ChatMessage,
   ClassroomSession,
   CourseDetail,
   KnowledgePoint,
+  LearningActivityState,
   TeachingAction,
   TeachingState,
   ModelConfig,
@@ -67,6 +69,17 @@ const inputMode = ref<'ASK' | 'ANSWER'>('ASK')
 const draft = ref('')
 const models = ref<ModelConfig[]>([])
 const busy = computed(() => streaming.value || stopping.value || loadingSession.value || Boolean(session.value?.streaming))
+const activity = ref<LearningActivityState | null>(null)
+const breakpoint = ref<BreakpointState | null>(null)
+const resumeNotice = ref('')
+const autosaveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
+const autosaveNote = ref('')
+const autosaveLabel = computed(() => {
+  if (autosaveState.value === 'saving') return '正在自动保存…'
+  if (autosaveState.value === 'saved') return '已自动保存'
+  if (autosaveState.value === 'error') return autosaveNote.value || '自动保存失败'
+  return '对话与草稿自动保存'
+})
 
 const collapsed = ref<Set<number>>(new Set())
 const catalogOpen = ref(typeof window === 'undefined' || window.innerWidth >= 980)
@@ -79,6 +92,243 @@ const composerRef = ref<{ focus: () => void } | null>(null)
 let controller: AbortController | null = null
 let sessionSeq = 0
 let courseSeq = 0
+
+/* ---------------- P1.5 学习活动与断点自动保存 ---------------- */
+
+const HEARTBEAT_MS = 30_000
+const IDLE_LIMIT_MS = 5 * 60_000
+let activityId: number | null = null
+let heartbeatTimer: number | undefined
+let lastTickAt = 0
+let lastInteractionAt = Date.now()
+let clientSeq = 0
+let lastSavedDraft = ''
+let lastSavedMode: 'ASK' | 'ANSWER' = 'ASK'
+let saveTimer: number | undefined
+let suppressDraftSave = false
+let listenersBound = false
+let breakpointReady = false
+
+const STAGE_TEXT: Record<string, string> = {
+  TEACH: '讲解',
+  DEMO: '演示',
+  CHECK: '理解检查',
+  PAIR: '陪练',
+  VERIFY: '独立验证',
+  NEXT: '已完成',
+}
+
+function stageText(stage: string | null | undefined): string {
+  return STAGE_TEXT[stage ?? ''] ?? stage ?? ''
+}
+
+function touchActivity(): void {
+  lastInteractionAt = Date.now()
+}
+
+function onUserActivity(): void {
+  touchActivity()
+}
+
+function bindActivityListeners(): void {
+  if (listenersBound) return
+  listenersBound = true
+  window.addEventListener('pointerdown', onUserActivity, { passive: true })
+  window.addEventListener('keydown', onUserActivity, { passive: true })
+  window.addEventListener('scroll', onUserActivity, { passive: true })
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  window.addEventListener('pagehide', saveOnExit)
+  window.addEventListener('beforeunload', saveOnExit)
+}
+
+function unbindActivityListeners(): void {
+  if (!listenersBound) return
+  listenersBound = false
+  window.removeEventListener('pointerdown', onUserActivity)
+  window.removeEventListener('keydown', onUserActivity)
+  window.removeEventListener('scroll', onUserActivity)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  window.removeEventListener('pagehide', saveOnExit)
+  window.removeEventListener('beforeunload', saveOnExit)
+}
+
+function onVisibilityChange(): void {
+  if (document.visibilityState === 'hidden') {
+    void flushHeartbeat()
+  } else {
+    lastTickAt = Date.now()
+    touchActivity()
+  }
+}
+
+function startHeartbeat(): void {
+  stopHeartbeat()
+  lastTickAt = Date.now()
+  heartbeatTimer = window.setInterval(() => void flushHeartbeat(), HEARTBEAT_MS)
+}
+
+function stopHeartbeat(): void {
+  if (heartbeatTimer) window.clearInterval(heartbeatTimer)
+  heartbeatTimer = undefined
+}
+
+async function startLearningActivity(sessionId?: number): Promise<void> {
+  const pointId = activePointId.value
+  if (!sessionId || !pointId) return
+  try {
+    const started = await learningApi.startActivity({
+      courseId: courseId.value,
+      knowledgePointId: pointId,
+      sessionId,
+    })
+    activity.value = started
+    activityId = started.id
+    lastTickAt = Date.now()
+    startHeartbeat()
+  } catch {
+    activity.value = null
+    activityId = null
+  }
+}
+
+async function endLearningActivity(reason = 'user_exit'): Promise<void> {
+  stopHeartbeat()
+  const id = activityId
+  activityId = null
+  if (!id) return
+  try {
+    await learningApi.finishActivity(id, { result: 'finished', reason })
+  } catch {
+    /* 心跳已经持久化，结束请求失败不影响已记录的有效时长 */
+  }
+  activity.value = null
+}
+
+async function restartLearningActivity(): Promise<void> {
+  await endLearningActivity('restarted')
+  if (session.value) await startLearningActivity(session.value.id)
+}
+
+async function flushHeartbeat(): Promise<void> {
+  const id = activityId
+  if (!id) return
+  const now = Date.now()
+  const elapsed = Math.max(0, Math.round((now - lastTickAt) / 1000))
+  lastTickAt = now
+  if (document.visibilityState === 'hidden') return
+  const idle = now - lastInteractionAt > IDLE_LIMIT_MS
+  const delta = idle ? 0 : Math.min(elapsed, 35)
+  if (delta <= 0) return
+  try {
+    const result = await learningApi.heartbeat(id, delta)
+    activity.value = result
+    if (result.closed || result.status !== 'active') {
+      activityId = null
+      stopHeartbeat()
+      if (session.value) await startLearningActivity(session.value.id)
+    }
+  } catch {
+    autosaveState.value = 'error'
+    autosaveNote.value = '学习时长暂时无法同步，稍后会自动重试'
+  }
+}
+
+function markSaved(mode: 'saving' | 'saved' | 'error', note = ''): void {
+  autosaveState.value = mode
+  autosaveNote.value = note
+}
+
+function scheduleSave(delay = 900): void {
+  if (!breakpointReady) return
+  if (saveTimer) window.clearTimeout(saveTimer)
+  saveTimer = window.setTimeout(() => void saveBreakpointNow(), delay)
+}
+
+async function saveBreakpointNow(): Promise<void> {
+  if (!session.value) return
+  if (suppressDraftSave || !breakpointReady) return
+  if (draft.value === lastSavedDraft && inputMode.value === lastSavedMode) return
+  const sid = session.value.id
+  const seq = ++clientSeq
+  const payloadDraft = draft.value
+  const payloadMode = inputMode.value
+  markSaved('saving')
+  try {
+    const saved = await learningApi.saveBreakpoint(sid, {
+      clientSeq: seq,
+      draftAnswer: payloadDraft,
+      inputMode: payloadMode,
+    })
+    breakpoint.value = saved
+    if (!saved.accepted) {
+      clientSeq = Math.max(clientSeq, saved.clientSeq)
+      markSaved('error', '服务器已有更新的进度，本次草稿未覆盖')
+      return
+    }
+    lastSavedDraft = payloadDraft
+    lastSavedMode = payloadMode
+    markSaved('saved')
+  } catch {
+    markSaved('error', '自动保存失败，请检查后端服务')
+  }
+}
+
+async function restoreBreakpoint(sessionId: number, seq: number): Promise<BreakpointState | null> {
+  try {
+    const saved = await learningApi.breakpoint(sessionId)
+    if (seq !== sessionSeq || session.value?.id !== sessionId) return null
+    breakpoint.value = saved
+    clientSeq = saved.clientSeq
+    lastSavedDraft = saved.draftAnswer
+    lastSavedMode = saved.inputMode
+    const resumed =
+      saved.stageStatus === 'WAITING_USER' ||
+      Boolean(saved.draftAnswer) ||
+      (saved.currentStage !== 'TEACH' && saved.currentStage !== 'NEXT') ||
+      messages.value.length > 0
+    if (resumed) {
+      const parts = [`已恢复上次进度：${stageText(saved.currentStage)}`]
+      if (saved.stageStatus === 'WAITING_USER') parts.push('上一个问题仍在等待你回答')
+      if (saved.draftAnswer) parts.push('未提交的草稿已恢复')
+      resumeNotice.value = parts.join(' · ')
+    }
+    return saved
+  } catch {
+    markSaved('error', '断点读取失败，教学状态仍可从后端恢复')
+    return null
+  }
+}
+
+function saveOnExit(): void {
+  if (!session.value || !breakpointReady) return
+  const sid = session.value.id
+  if (draft.value !== lastSavedDraft || inputMode.value !== lastSavedMode) {
+    const seq = ++clientSeq
+    const body = JSON.stringify({ clientSeq: seq, draftAnswer: draft.value, inputMode: inputMode.value })
+    try {
+      void fetch(`${apiBase}/learning/sessions/${sid}/breakpoint`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        keepalive: true,
+      })
+    } catch {
+      /* 页面已卸载，无法再提示 */
+    }
+  }
+  if (activityId) {
+    try {
+      void fetch(`${apiBase}/learning/activities/${activityId}/finish`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ result: 'finished', reason: 'browser_closed' }),
+        keepalive: true,
+      })
+    } catch {
+      /* 心跳已保存最后一次有效时间 */
+    }
+  }
+}
 
 const flatPoints = computed(() =>
   (course.value?.chapters ?? []).flatMap((chapter) =>
@@ -112,8 +362,20 @@ watch(() => route.query.point, (value) => {
     void selectPoint(pointId, { updateUrl: false })
   }
 })
+watch([draft, inputMode], ([value, mode]) => {
+  if (!breakpointReady || suppressDraftSave) return
+  if (value === lastSavedDraft && mode === lastSavedMode) return
+  scheduleSave()
+})
+
+onMounted(bindActivityListeners)
 
 onBeforeUnmount(() => {
+  saveOnExit()
+  stopHeartbeat()
+  activityId = null
+  if (saveTimer) window.clearTimeout(saveTimer)
+  unbindActivityListeners()
   courseSeq += 1
   sessionSeq += 1
   abortStream()
@@ -123,6 +385,11 @@ async function bootstrap(): Promise<void> {
   const currentCourse = ++courseSeq
   sessionSeq += 1
   abortStream()
+  void endLearningActivity('course_switch')
+  breakpointReady = false
+  resumeNotice.value = ''
+  autosaveState.value = 'idle'
+  autosaveNote.value = ''
   course.value = null
   session.value = null
   messages.value = []
@@ -164,6 +431,11 @@ async function selectPoint(
   if (pointId === activePointId.value && session.value) return
 
   abortStream()
+  void endLearningActivity('switch_point')
+  breakpointReady = false
+  resumeNotice.value = ''
+  autosaveState.value = 'idle'
+  autosaveNote.value = ''
   const seq = ++sessionSeq
   activePointId.value = pointId
   session.value = null
@@ -194,9 +466,26 @@ async function selectPoint(
     session.value = data
     activePointId.value = data.point.id
     messages.value = [...data.messages]
-    await loadTeaching(data.id, seq)
+    const [, savedBreakpoint] = await Promise.all([
+      loadTeaching(data.id, seq),
+      restoreBreakpoint(data.id, seq),
+      startLearningActivity(data.id),
+    ])
     if (seq !== sessionSeq) return
     loadingSession.value = false
+    await nextTick()
+    if (
+      savedBreakpoint?.draftAnswer &&
+      savedBreakpoint.currentStage !== 'NEXT' &&
+      !draft.value
+    ) {
+      suppressDraftSave = true
+      draft.value = savedBreakpoint.draftAnswer
+      inputMode.value = savedBreakpoint.inputMode
+      await nextTick()
+      suppressDraftSave = false
+    }
+    breakpointReady = true
     if (data.streaming) {
       void followSession(data.id, seq)
       return
@@ -225,6 +514,7 @@ function acceptTeaching(state: TeachingState): void {
   teaching.value = state
   if (state.currentQuestion && state.currentQuestion !== previousQuestion) inputMode.value = 'ANSWER'
   if (!state.currentQuestion) inputMode.value = 'ASK'
+  if (breakpointReady) scheduleSave(300)
 }
 
 async function loadTeaching(sid: number, seq: number): Promise<void> {
@@ -250,6 +540,19 @@ async function teachingAction(action: TeachingAction, content = ''): Promise<voi
       acceptTeaching(data.teaching)
       if (action === 'PAUSE' && (streaming.value || session.value?.streaming)) await stopGenerating()
       if (seq !== sessionSeq) return
+      if (action === 'RESTART') {
+        draft.value = ''
+        resumeNotice.value = ''
+        lastSavedDraft = ''
+        lastSavedMode = 'ASK'
+        if (session.value) {
+          clientSeq += 1
+          void learningApi
+            .saveBreakpoint(session.value.id, { clientSeq, draftAnswer: '', inputMode: 'ASK' })
+            .catch(() => undefined)
+        }
+        void restartLearningActivity()
+      }
       if (action === 'NEXT') {
         if (data.nextKnowledgePointId) await selectPoint(data.nextKnowledgePointId)
         else if (data.courseComplete) ElMessage.success('已完成目录最后一个知识点；可回课程详情查看整门课的进度。')
@@ -505,6 +808,18 @@ function statusClass(status: string): string {
   return `is-${status.replace('_', '-')}`
 }
 
+function formatDuration(seconds: number | undefined): string {
+  const value = Math.max(0, Math.round(seconds ?? 0))
+  const minutes = Math.floor(value / 60)
+  const rest = value % 60
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60)
+    return `${hours} 小时 ${minutes % 60} 分`
+  }
+  if (minutes) return `${minutes} 分 ${rest} 秒`
+  return `${rest} 秒`
+}
+
 function isPointActive(point: KnowledgePoint): boolean {
   return point.id === activePointId.value
 }
@@ -617,6 +932,11 @@ function chapterPoints(chapter: Chapter): KnowledgePoint[] {
           </div>
         </header>
 
+        <div v-if="resumeNotice" class="resume-note" role="status">
+          <span>{{ resumeNotice }}</span>
+          <button type="button" @click="resumeNotice = ''">知道了</button>
+        </div>
+
         <TeachingFlowPanel v-if="teaching" :state="teaching" :busy="busy" :control-busy="controlBusy" :has-model="Boolean(session?.model)" @action="teachingAction" />
 
         <div v-loading="loadingCourse || loadingSession" class="conversation" ref="messagesEl" @scroll="onScroll">
@@ -709,7 +1029,9 @@ function chapterPoints(chapter: Chapter): KnowledgePoint[] {
               @keydown="onKeydown"
             />
             <div class="composer-actions">
-              <span class="composer-hint">Enter 发送 · Shift+Enter 换行 · 对话自动保存</span>
+              <span class="composer-hint" :class="{ 'is-error': autosaveState === 'error' }">
+                Enter 发送 · Shift+Enter 换行 · {{ autosaveLabel }}
+              </span>
               <div class="composer-buttons">
                 <el-button
                   v-if="streaming || session?.streaming || stopping"
@@ -792,6 +1114,13 @@ function chapterPoints(chapter: Chapter): KnowledgePoint[] {
           <p class="info-label">本次会话</p>
           <p class="info-value small">{{ messages.length }} 条消息</p>
           <p class="info-note">最近更新 {{ formatRelative(session?.lastMessageAt) }}</p>
+        </section>
+
+        <section class="info-block">
+          <p class="info-label">本次学习活动</p>
+          <p class="info-value small">{{ activity ? formatDuration(activity.activeSeconds) : '正在记录…' }}</p>
+          <p class="info-note">每 30 秒上报有效时长；空闲超过 5 分钟自动暂停计时。</p>
+          <p class="info-note">{{ autosaveLabel }}</p>
         </section>
 
         <section class="info-block">
@@ -1068,6 +1397,28 @@ function chapterPoints(chapter: Chapter): KnowledgePoint[] {
   min-width: 0;
   min-height: 0;
   background: var(--ml-bg);
+}
+
+.resume-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 28px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ml-accent) 26%, var(--ml-border));
+  background: color-mix(in srgb, var(--ml-accent) 8%, transparent);
+  color: var(--ml-text-2);
+  font-size: 12px;
+}
+
+.resume-note button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ml-accent);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
 .input-mode { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; font-size: 11px; color: var(--ml-text-3); }
@@ -1418,6 +1769,10 @@ function chapterPoints(chapter: Chapter): KnowledgePoint[] {
 .composer-hint {
   font-size: 10.5px;
   color: var(--ml-text-3);
+}
+
+.composer-hint.is-error {
+  color: var(--ml-warning);
 }
 
 .composer-buttons {

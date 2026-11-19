@@ -9,7 +9,7 @@
 ## 1. 表结构
 
 当前共七张表：`model_configs`、`app_settings`、`courses`、`chapters`、`knowledge_points`，以及 P1.3 的 `learning_sessions`、`chat_messages`。
-字段以 `apps/api/app/db/models.py` 为准。2026-11-18 日常库初检 `schema_version=4`，19:16（北京时间）只读复查时已为 `5`，变更来源未确认；隔离验收库为 `5`。下文 P1.3 结构为版本 4 基线；不要在未备份时用当前后端启动旧库。
+字段以 `apps/api/app/db/models.py` 为准。P1.5 完成后 schema 版本为 **6**；P1.4 为 5，P1.3 为 4。升级只做加表/加列，不删除用户课程、对话与学习记录。升级前建议备份 `data/mastery_lab.db`。
 
 ### 1.1 `model_configs` — 模型接入配置
 
@@ -240,3 +240,41 @@ Copy-Item data\mastery_lab.db data\mastery_lab.backup.db
 | created_at | DATETIME | UTC |
 
 system 消息、密钥及原始上游错误不写入聊天表。按 ID 顺序恢复。停止保留正文；重生成替换最后助手消息（无版本历史），最后一条为用户时直接补答。进程中断遗留 streaming 在无活动任务时读为 interrupted，下次生成开始前将旧状态归一为 interrupted；不改用户历史正文。删除课程/知识点会级联清除相关会话和消息。
+
+## 8. P1.5 学习档案结构（schema 6）
+
+P1.5 新增 6 张表，并在 `knowledge_points` 增加 `mastery_state`、`mastery_updated_at`。
+完整字段、口径与 API 见 `docs/LEARNING_RECORDS.md`；本节只列结构变化。
+
+### 8.1 `knowledge_points` 增量列
+
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| `mastery_state` | VARCHAR(24) NOT NULL DEFAULT 'NOT_STARTED' | 6 态掌握状态，只由教学证据更新 |
+| `mastery_updated_at` | DATETIME NULL | 最近一次状态变化时间 |
+
+迁移时 `_backfill_mastery()` 幂等回填：复制已有 `teaching_progress.mastery_state`；由 VERIFY 完成的补为
+`INDEPENDENT`；历史手工完成（`legacy_manual`）不推断为已掌握。回填同时写入一条来源为「迁移」的
+`mastery_history`（仅在该知识点没有历史时）。
+
+### 8.2 新表
+
+| 表 | 主键/唯一约束 | 主要列 | 删除策略 |
+| --- | --- | --- | --- |
+| `learning_activities` | `id`；`session_id` 部分唯一（仅 `status='active'`） | 课程、知识点、会话、状态、`started_at`、`last_heartbeat_at`、`ended_at`、`active_seconds`、阶段与尝试快照 | 课程/知识点/会话删除时级联 |
+| `learning_breakpoints` | `session_id` | 当前阶段/状态、`revision`、`paused`、`draft_answer`、当前问题、计数、最后消息、`client_seq` | 会话删除时级联 |
+| `mastery_history` | `id` | `from_state`、`to_state`、`reason`、`evidence`、会话、活动 | 课程/知识点级联；活动置空 |
+| `mistake_records` | `id`；`dedupe_key` 索引 | 原始问题、用户回答、参考答案、错误原因、纠正讲解、偏差、`status`、`occurrence_count` | 课程/知识点级联 |
+| `mistake_occurrences` | `id` | `mistake_id`、活动、会话、阶段、评价、当次问答与反馈 | 错题级联 |
+| `learning_events` | `id` | 活动、课程、知识点、会话、事件类型、详情 | 课程/知识点级联；活动置空 |
+
+### 8.3 时间字段
+
+所有时间按 UTC 存储，接口输出 UTC 带时区；前端按浏览器本地时区展示。
+有效学习时长只取 `learning_activities.active_seconds`，与 `started_at`/`ended_at` 的墙钟差无关。
+
+### 8.4 已有数据兼容
+
+- 不新增对旧表的必填字段；`chat_messages`、`teaching_*`、`learning_sessions` 保持原结构；
+- P1.4 的 `teaching_progress` 仍是教学阶段与评价的事实来源，P1.5 不复制一套教学状态；
+- 删除课程会同时删除该课程的活动与错题；若用户需要保留历史，应在删除前导出数据库备份。

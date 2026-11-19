@@ -22,7 +22,7 @@ from .core.response import ApiResponse, AppError, success
 from .db import SessionLocal, init_db
 from .db.models import AppSetting
 
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "6"
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -46,9 +46,11 @@ def _record_schema_version() -> None:
 async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     init_db()
+    from .services.learning_record import close_stale_activities
     from .services.teaching_state import TeachingStateMachine
     with SessionLocal() as session:
         TeachingStateMachine(session).recover()
+        close_stale_activities(session)
     _record_schema_version()
     logger.info(
         "Mastery Lab API 已启动 | 数据目录=%s | 数据库=%s | 文档=http://%s:%s/docs",
